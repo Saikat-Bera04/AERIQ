@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
-    "start": "tsx --env-file=.env src/index.ts",
+    "build": "tsc --noEmit",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -23,13 +24,13 @@
     "date-fns-tz": "^3.2.0",
     "drizzle-orm": "^0.41.0",
     "postgres": "^3.4.5",
+    "tsx": "^4.19.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.10.0",
     "drizzle-kit": "^0.30.6",
-    "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.1.1"
   }
