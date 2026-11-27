@@ -9,6 +9,7 @@ export function LeafletMap({
   zoom = 12,
   reports,
   stations,
+  userLocation,
   selectedReportId,
   onSelectReport,
   onMapClick,
@@ -18,6 +19,7 @@ export function LeafletMap({
   zoom?: number;
   reports: CommunityReport[];
   stations: OfficialStationPin[];
+  userLocation?: { lat: number; lng: number; label?: string } | null;
   selectedReportId?: string | null;
   onSelectReport?: (id: string) => void;
   onMapClick?: (lat: number, lng: number) => void;
@@ -72,6 +74,21 @@ export function LeafletMap({
       const layer = layerRef.current;
       layer.clearLayers();
 
+      // User's live rounded location (~500 m)
+      if (userLocation) {
+        const userIcon = L.divIcon({
+          className: "",
+          iconSize: [20, 20],
+          html: `<div style="width:20px;height:20px;border-radius:999px;background:rgba(198,243,92,0.35);display:flex;align-items:center;justify-content:center;"><span style="width:11px;height:11px;border-radius:999px;background:#10291a;border:2.5px solid #c6f35c;box-shadow:0 0 0 2px #fff"></span></div>`,
+        });
+        L.marker([userLocation.lat, userLocation.lng], { icon: userIcon })
+          .bindPopup(
+            `<div style="font-family:var(--mono);font-size:10px;text-transform:uppercase"><strong>${userLocation.label ?? "Your area (~500 m)"}</strong><br/>${userLocation.lat}, ${userLocation.lng}</div>`
+          )
+          .addTo(layer);
+        mapRef.current.setView([userLocation.lat, userLocation.lng], zoom);
+      }
+
       // Official monitoring stations: 18px ink squares with white dot
       stations.forEach((st) => {
         const icon = L.divIcon({
@@ -105,7 +122,7 @@ export function LeafletMap({
     return () => {
       cancelled = true;
     };
-  }, [reports, stations, selectedReportId, onSelectReport]);
+  }, [reports, stations, userLocation, zoom, selectedReportId, onSelectReport]);
 
   return (
     <div className="relative w-full overflow-hidden" style={{ height }}>

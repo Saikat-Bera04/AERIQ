@@ -99,7 +99,7 @@ export function PageHero({
       )}
 
       {hud && (
-        <div className="hidden md:block absolute right-[9%] top-[30%] z-10">
+        <div className="hidden md:block absolute right-[9%] top-[16%] z-10">
           <HudFrame chip={chip} lines={hud} />
         </div>
       )}

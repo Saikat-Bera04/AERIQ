@@ -605,8 +605,14 @@ export default function DashboardPage() {
               </div>
               <div className="rounded-[10px] overflow-hidden border border-[var(--rule)] h-[220px]">
                 <LeafletMap
+                  center={[liveLoc?.lat ?? 22.5726, liveLoc?.lng ?? 88.3639]}
                   reports={hotspots.reports}
                   stations={hotspots.stations}
+                  userLocation={
+                    liveLoc
+                      ? { lat: liveLoc.lat, lng: liveLoc.lng, label: `${liveLoc.city} (~500 m)` }
+                      : null
+                  }
                   height="220px"
                 />
               </div>

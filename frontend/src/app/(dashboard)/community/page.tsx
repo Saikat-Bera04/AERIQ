@@ -164,6 +164,11 @@ export default function CommunityPage() {
         center={[liveLoc?.lat ?? 22.5726, liveLoc?.lng ?? 88.3639]}
         reports={filtered}
         stations={stations}
+        userLocation={
+          liveLoc
+            ? { lat: liveLoc.lat, lng: liveLoc.lng, label: `${liveLoc.city} (~500 m)` }
+            : null
+        }
         selectedReportId={selectedId}
         onSelectReport={setSelectedId}
         height="100vh"
@@ -191,6 +196,10 @@ export default function CommunityPage() {
         variant="light"
         className="hidden md:flex flex-col gap-2 fixed left-[126px] bottom-6 z-20 p-3.5 max-w-[300px]"
       >
+        <div className="flex items-center gap-2 font-mono text-[10px] uppercase">
+          <span className="w-3.5 h-3.5 rounded-full bg-[var(--ink)] border-2 border-[var(--lime)] inline-block" />
+          <span>Your area (~500 m)</span>
+        </div>
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase">
           <span className="w-3.5 h-3.5 rounded-full bg-[var(--lime)] border border-[var(--ink)] inline-block" />
           <span>Community observation</span>

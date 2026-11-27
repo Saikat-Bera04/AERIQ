@@ -11,6 +11,7 @@ export interface StationHourlyReading {
   pollutant: Pollutant;
   value: number;
   unit: string;
+  averaging?: "hourly" | "8h" | "24h" | "instant";
   observedAt: string;
   provider: string;
   stationId: string;
@@ -80,17 +81,23 @@ export function computeCpcbAqi(
 
     if (inWindow.length === 0) continue;
 
-    // Deduplicate by hour bucket if multiple readings fall in same hour
-    const avg =
-      inWindow.reduce((sum, r) => sum + r.value, 0) / inWindow.length;
+    // If CPCB already provided a pre-computed 24h/8h running average (e.g. data.gov.in avg_value),
+    // treat it as satisfying the averaging period; otherwise enforce hourly count (16/24h or 6/8h).
+    const preAveraged = inWindow.find(
+      (r) => r.averaging === "24h" || r.averaging === "8h"
+    );
+    const effectiveHours = preAveraged ? hoursRequired : inWindow.length;
+    const avg = preAveraged
+      ? preAveraged.value
+      : inWindow.reduce((sum, r) => sum + r.value, 0) / inWindow.length;
 
-    if (inWindow.length < hoursRequired) {
+    if (effectiveHours < hoursRequired) {
       subIndices.push({
         pollutant,
         value: Number(avg.toFixed(2)),
         average: Number(avg.toFixed(2)),
         subIndex: null,
-        hoursAvailable: inWindow.length,
+        hoursAvailable: effectiveHours,
         hoursRequired,
         status: "incomplete",
       });
@@ -101,7 +108,7 @@ export function computeCpcbAqi(
         value: Number(avg.toFixed(2)),
         average: Number(avg.toFixed(2)),
         subIndex: idx,
-        hoursAvailable: inWindow.length,
+        hoursAvailable: effectiveHours,
         hoursRequired,
         status: "ok",
       });

@@ -151,7 +151,9 @@ export async function runIngestObservations() {
         const val = Number(rec.avg_value ?? rec.pollutant_avg);
         if (!Number.isFinite(val) || !rec.pollutant_id || !rec.last_update) continue;
 
-        const isCo = rec.pollutant_id.trim().toLowerCase() === "co";
+        const pid = rec.pollutant_id.trim().toLowerCase();
+        const isCo = pid === "co";
+        const isEightHour = pid === "co" || pid === "o3" || pid === "ozone";
         samples.push({
           provider: "cpcb",
           stationId: station.id,
@@ -159,7 +161,7 @@ export async function runIngestObservations() {
           pollutantRaw: rec.pollutant_id,
           value: val,
           unitRaw: isCo ? "mg/m³" : "µg/m³",
-          averaging: "hourly",
+          averaging: isEightHour ? "8h" : "24h",
           observedAtRaw: rec.last_update,
           kind: "observation",
         });
@@ -231,6 +233,7 @@ export async function runIngestObservations() {
         pollutant: row.pollutant as Pollutant,
         value: Number(row.value),
         unit: row.unit,
+        averaging: row.averaging as "hourly" | "8h" | "24h" | "instant",
         observedAt: row.observedAt.toISOString(),
         provider: "cpcb",
         stationId: st.id,
