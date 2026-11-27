@@ -92,22 +92,26 @@ export function createFrameCache(
 
   function storeFrame(index: number, quality = 0.86) {
     if (destroyed || !gctx || frames[index]) return;
-    gctx.drawImage(video, 0, 0, grab.width, grab.height);
-    grab.toBlob(
-      (blob) => {
-        if (!blob || destroyed) return;
-        if (!frames[index]) {
-          frames[index] = blob;
-          cachedCount++;
-          onReadyChange?.(cachedCount, NF);
-        }
-        if (index === want || shown < 0) {
-          drawWant();
-        }
-      },
-      "image/jpeg",
-      quality
-    );
+    try {
+      gctx.drawImage(video, 0, 0, grab.width, grab.height);
+      grab.toBlob(
+        (blob) => {
+          if (!blob || destroyed) return;
+          if (!frames[index]) {
+            frames[index] = blob;
+            cachedCount++;
+            onReadyChange?.(cachedCount, NF);
+          }
+          if (index === want || shown < 0) {
+            drawWant();
+          }
+        },
+        "image/jpeg",
+        quality
+      );
+    } catch {
+      // Ignore tainted canvas / decode errors
+    }
   }
 
   function startCaching() {
