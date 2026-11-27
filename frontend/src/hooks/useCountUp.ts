@@ -12,12 +12,13 @@ export function useCountUp(
 
   useEffect(() => {
     if (!active) return;
-    if (prefersReducedMotion()) {
-      setValue(target);
-      return;
-    }
 
     let rafId = 0;
+    if (prefersReducedMotion()) {
+      rafId = requestAnimationFrame(() => setValue(target));
+      return () => cancelAnimationFrame(rafId);
+    }
+
     const start = performance.now();
 
     const step = (now: number) => {

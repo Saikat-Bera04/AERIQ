@@ -51,7 +51,10 @@ function useFreshness(
 ): FreshnessLevel {
   const [level, setLevel] = useState<FreshnessLevel>("fresh");
   useEffect(() => {
-    setLevel(getFreshnessLevel(observedAt, freshMinutes, agingMinutes));
+    const id = requestAnimationFrame(() => {
+      setLevel(getFreshnessLevel(observedAt, freshMinutes, agingMinutes));
+    });
+    return () => cancelAnimationFrame(id);
   }, [observedAt, freshMinutes, agingMinutes]);
   return level;
 }

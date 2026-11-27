@@ -50,12 +50,10 @@ export function WordReveal({
   const words = text.split(" ");
   const count = words.length;
 
+  const reduced = typeof window !== "undefined" && prefersReducedMotion();
+
   useEffect(() => {
-    if (progress !== undefined || !triggerOnView || !inView) return;
-    if (prefersReducedMotion()) {
-      setAnimT(1);
-      return;
-    }
+    if (progress !== undefined || !triggerOnView || !inView || reduced) return;
     let raf = 0;
     const start = performance.now();
     const step = (now: number) => {
@@ -65,10 +63,16 @@ export function WordReveal({
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [inView, triggerOnView, progress]);
+  }, [inView, triggerOnView, progress, reduced]);
 
-  const t = progress !== undefined ? progress : triggerOnView ? animT : 1;
-  const reduced = typeof window !== "undefined" && prefersReducedMotion();
+  const t =
+    progress !== undefined
+      ? progress
+      : reduced
+        ? 1
+        : triggerOnView
+          ? animT
+          : 1;
 
   return (
     <span ref={ref} className={className}>

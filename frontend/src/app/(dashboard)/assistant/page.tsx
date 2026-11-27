@@ -37,6 +37,7 @@ const CONVERSATIONS = [
 ];
 
 export default function AssistantPage() {
+  const msgSeqRef = React.useRef(1);
   const [activeConv, setActiveConv] = useState("c1");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -53,14 +54,15 @@ export default function AssistantPage() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    const seq = msgSeqRef.current++;
     const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`,
+      id: `u-${seq}`,
       role: "user",
       text: trimmed,
     };
 
     const replyMsg: ChatMessage = {
-      id: `a-${Date.now() + 1}`,
+      id: `a-${seq}`,
       role: "assistant",
       text: `At ${MOCK_AQI_CURRENT.aqi} CPCB AQI (Poor) in ${MOCK_AQI_CURRENT.location.city}, fine particulates (PM2.5 at 92 µg/m³) are the main concern. For your ${MOCK_USER.lifestyle.toLowerCase()} routine, prefer covered Metro transit and shift high-exertion outdoor exercise indoors until afternoon dispersion improves.`,
       sections: [

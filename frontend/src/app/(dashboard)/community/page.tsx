@@ -22,7 +22,8 @@ import { formatIST, formatRelativeTime } from "@/lib/format";
 function RelativeTime({ iso }: { iso: string }) {
   const [text, setText] = React.useState(() => formatIST(iso));
   React.useEffect(() => {
-    setText(formatRelativeTime(iso));
+    const id = requestAnimationFrame(() => setText(formatRelativeTime(iso)));
+    return () => cancelAnimationFrame(id);
   }, [iso]);
   return <>{text}</>;
 }
