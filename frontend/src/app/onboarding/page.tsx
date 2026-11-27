@@ -13,6 +13,7 @@ import {
   Mist,
   ProgressBar,
 } from "@/components/ui-aeriq";
+import { useLiveLocation } from "@/hooks/useLiveLocation";
 
 const CITIES = [
   "Kolkata · Rabindra Bharati",
@@ -59,6 +60,7 @@ export default function OnboardingPage() {
 
   const [step, setStep] = useState(1);
   const [finishing, setFinishing] = useState(false);
+  const { syncBrowserOnce, location: liveLoc } = useLiveLocation();
 
   // Step 1
   const [cityQuery, setCityQuery] = useState("");
@@ -211,10 +213,12 @@ export default function OnboardingPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (!locations.some((l) => l.city.includes("Kolkata"))) {
+                    syncBrowserOnce();
+                    const label = `${liveLoc.city} · ${liveLoc.station}`;
+                    if (!locations.some((l) => l.city === label)) {
                       setLocations((prev) => [
                         ...prev,
-                        { city: "Kolkata · Rabindra Bharati", isDefault: false },
+                        { city: label, isDefault: false },
                       ]);
                     }
                   }}

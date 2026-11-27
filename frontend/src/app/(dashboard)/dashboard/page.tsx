@@ -30,6 +30,7 @@ import {
   MOCK_USER,
 } from "@/mocks/data";
 import { formatIST } from "@/lib/format";
+import { useLiveLocation } from "@/hooks/useLiveLocation";
 
 const LeafletMap = dynamic(
   () => import("@/components/community/LeafletMap").then((m) => m.LeafletMap),
@@ -44,6 +45,7 @@ export default function DashboardPage() {
   const [expandedAi, setExpandedAi] = useState<string | null>("commute");
   const [rangeTab, setRangeTab] = useState<"24h" | "7d" | "30d">("24h");
   const [refreshing, setRefreshing] = useState(false);
+  const { location: liveLoc } = useLiveLocation();
 
   const data = MOCK_AQI_CURRENT;
   const ai = MOCK_AI_RECOMMENDATION;
@@ -57,15 +59,15 @@ export default function DashboardPage() {
     <div>
       <PageHero
         chip={`Good morning, ${MOCK_USER.firstName}`}
-        title={`Today's air in ${data.location.city}`}
+        title={`Today's air in ${liveLoc.city}`}
         subtitle={ai.dailySummary}
         height="64vh"
         crop="50% 62%"
         rock
         hud={[
-          `STATION ${data.station}`,
-          `OBSERVED ${formatIST(data.observedAt)}`,
-          `SOURCE ${data.provider}`,
+          `STATION ${liveLoc.station}`,
+          `OBSERVED ${formatIST(liveLoc.observedAt)}`,
+          `SOURCE ${liveLoc.provider}`,
         ]}
       >
         {/* Dark glass AQI card on stage */}
@@ -76,21 +78,21 @@ export default function DashboardPage() {
         >
           <div className="flex items-start justify-between gap-2">
             <h4 className="text-[15px] font-medium">Air quality index</h4>
-            <AqiBadge category={data.category} />
+            <AqiBadge category={liveLoc.category} />
           </div>
           <div className="mt-1.5">
             <SourceStamp
-              provider={data.provider}
-              station={data.station}
-              observedAt={data.observedAt}
+              provider={liveLoc.provider}
+              station={liveLoc.station}
+              observedAt={liveLoc.observedAt}
               className="text-white/75"
             />
           </div>
 
-          {data.aqi !== null ? (
+          {liveLoc.aqi !== null ? (
             <div className="mt-3 flex items-baseline gap-2">
               <span className="text-[46px] font-medium tracking-[-0.04em] leading-none">
-                <CountUp value={data.aqi} />
+                <CountUp value={liveLoc.aqi} />
               </span>
               <span className="font-mono text-[10px] tracking-[0.12em] uppercase opacity-80">
                 CPCB AQI

@@ -29,6 +29,7 @@ import type {
   CommuteSimRequest,
   IndoorProfile,
   RegisterRequest,
+  SyncLocationRequest,
 } from "@/contracts";
 
 export function isMocksEnabled(): boolean {
@@ -108,6 +109,62 @@ export async function getAqiCurrent() {
     pollutants: MOCK_READINGS,
     weather: MOCK_WEATHER,
     station: MOCK_STATION,
+  };
+}
+
+const KNOWN_CITIES = [
+  { city: "Kolkata", station: "Rabindra Bharati", lat: 22.5726, lng: 88.3639, aqi: 212, category: "poor" as const },
+  { city: "New Delhi", station: "Lodhi Road", lat: 28.5918, lng: 77.2273, aqi: 286, category: "poor" as const },
+  { city: "Bengaluru", station: "BTM Layout", lat: 12.9166, lng: 77.6101, aqi: 74, category: "satisfactory" as const },
+  { city: "Mumbai", station: "Bandra Kurla Complex", lat: 19.0653, lng: 72.8681, aqi: 138, category: "moderate" as const },
+  { city: "Chennai", station: "Alandur", lat: 13.0025, lng: 80.2061, aqi: 86, category: "satisfactory" as const },
+  { city: "Hyderabad", station: "Jubilee Hills", lat: 17.4319, lng: 78.4071, aqi: 118, category: "moderate" as const },
+];
+
+export async function syncLiveLocation(
+  _userId: string,
+  input: SyncLocationRequest
+) {
+  const roundedPoint = roundPointTo500m(input.lat, input.lng);
+
+  // Pick nearest known CPCB station by squared degree distance
+  let nearest = KNOWN_CITIES[0];
+  let bestDist = Infinity;
+  for (const c of KNOWN_CITIES) {
+    const d = (c.lat - roundedPoint.lat) ** 2 + (c.lng - roundedPoint.lng) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      nearest = c;
+    }
+  }
+
+  const syncedAt = new Date().toISOString();
+  return {
+    location: {
+      id: `live-${roundedPoint.lat}-${roundedPoint.lng}`,
+      label: input.label ?? "Live location",
+      city: input.city ?? nearest.city,
+      roundedPoint,
+      autoSync: input.autoSync,
+      syncedAt,
+    },
+    station: {
+      id: `st-cpcb-${nearest.city.toLowerCase().replace(/\s+/g, "-")}`,
+      name: nearest.station,
+      city: nearest.city,
+      provider: "cpcb",
+    },
+    aqi: {
+      ...MOCK_AQI_RESULT,
+      aqi: nearest.aqi,
+      category: nearest.category,
+      stationName: nearest.station,
+    },
+    pollutants: MOCK_READINGS.map((r) => ({
+      ...r,
+      stationName: nearest.station,
+    })),
+    weather: MOCK_WEATHER,
   };
 }
 

@@ -9,6 +9,7 @@ import {
   LoginRequestSchema,
   RecommendRequestSchema,
   RegisterRequestSchema,
+  SyncLocationRequestSchema,
 } from "@/contracts";
 import { MOCK_EMISSION_FACTORS } from "@/mocks/fixtures";
 import {
@@ -39,6 +40,7 @@ import {
   runAssistantChat,
   runCommuteSimulation,
   runExposureSimulation,
+  syncLiveLocation,
 } from "@/server/services";
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB limit
@@ -194,6 +196,13 @@ export async function handleRequest(
 
     if (path === "/api/v1/aqi/current" && method === "GET") {
       sendJson(res, 200, okEnvelope(await getAqiCurrent()));
+      return;
+    }
+
+    if (path === "/api/v1/locations/sync" && method === "POST") {
+      const body = SyncLocationRequestSchema.parse(await readJsonBody(req));
+      const synced = await syncLiveLocation(effectiveUserId, body);
+      sendJson(res, 200, okEnvelope(synced));
       return;
     }
 

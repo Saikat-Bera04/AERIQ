@@ -60,6 +60,15 @@ export const PatchLocationRequestSchema = z.object({
   isDefault: z.boolean().optional(),
 });
 
+export const SyncLocationRequestSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  city: z.string().trim().min(1).max(80).optional(),
+  label: z.string().trim().min(1).max(60).optional(),
+  autoSync: z.boolean().default(true),
+});
+export type SyncLocationRequest = z.infer<typeof SyncLocationRequestSchema>;
+
 export const NotificationPrefsSchema = z.object({
   dailySummary: z.boolean(),
   categoryChangeAlerts: z.boolean(),
