@@ -1,4 +1,10 @@
+import fs from "node:fs";
 import http from "node:http";
+
+if (fs.existsSync(".env")) {
+  process.loadEnvFile(".env");
+}
+
 import { validateEnv } from "./server/env";
 import { handleRequest } from "./server/http/router";
 
