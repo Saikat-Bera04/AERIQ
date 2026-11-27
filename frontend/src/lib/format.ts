@@ -2,7 +2,19 @@ import { format, formatDistanceToNow } from "date-fns";
 
 export function formatIST(isoString: string, pattern = "HH:mm"): string {
   const d = new Date(isoString);
-  // Convert to IST (+05:30) cleanly regardless of browser timezone
+  if (Number.isNaN(d.getTime())) return "--:-- IST";
+
+  if (pattern === "HH:mm") {
+    const formatted = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(d);
+    return `${formatted} IST`;
+  }
+
+  // Fallback for custom patterns
   const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
   const ist = new Date(utcMs + 5.5 * 3600000);
   return `${format(ist, pattern)} IST`;

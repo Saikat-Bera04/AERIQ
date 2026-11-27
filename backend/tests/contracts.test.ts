@@ -49,7 +49,7 @@ describe("Contracts & Privacy", () => {
       lng: 77.2273,
       autoSync: true,
     });
-    expect(roundPointTo500m(parsed.lat, parsed.lng)).toEqual({
+    expect(roundPointTo500m(parsed.lat!, parsed.lng!)).toEqual({
       lat: 28.59,
       lng: 77.225,
     });

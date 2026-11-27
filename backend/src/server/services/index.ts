@@ -325,8 +325,15 @@ export async function deleteLocation(userId: string, locId: string) {
 }
 
 export async function syncLiveLocation(userId: string, input: SyncLocationRequest) {
-  const roundedPoint = roundPointTo500m(input.lat, input.lng);
-  const nearest = await findNearestStation(roundedPoint.lat, roundedPoint.lng, input.city);
+  const hasCoords = input.lat !== undefined && input.lng !== undefined;
+  const nearest = await findNearestStation(
+    input.lat ?? 22.5726,
+    input.lng ?? 88.3639,
+    input.city
+  );
+  const roundedPoint = hasCoords
+    ? roundPointTo500m(input.lat!, input.lng!)
+    : roundPointTo500m(nearest?.point.lat ?? 22.5726, nearest?.point.lng ?? 88.3639);
 
   const city = input.city ?? nearest?.city ?? "Unknown";
   const existingDefault = await db.query.locations.findFirst({

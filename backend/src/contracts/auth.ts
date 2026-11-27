@@ -61,8 +61,8 @@ export const PatchLocationRequestSchema = z.object({
 });
 
 export const SyncLocationRequestSchema = z.object({
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
+  lat: z.number().min(-90).max(90).optional(),
+  lng: z.number().min(-180).max(180).optional(),
   city: z.string().trim().min(1).max(80).optional(),
   label: z.string().trim().min(1).max(60).optional(),
   autoSync: z.boolean().default(true),

@@ -85,16 +85,15 @@ export function useLiveLocation() {
     }
   }, []);
 
-  const syncCoordinates = useCallback(
-    async (
-      rawLat: number,
-      rawLng: number,
-      opts?: { city?: string; autoSync?: boolean }
-    ) => {
-      const rounded = roundTo500m(rawLat, rawLng);
+  const syncWithPayload = useCallback(
+    async (payload: {
+      lat?: number;
+      lng?: number;
+      city?: string;
+      autoSync: boolean;
+    }) => {
       setSyncing(true);
       setError(null);
-
       try {
         const { data } = await api.post<{
           location: {
@@ -106,12 +105,7 @@ export function useLiveLocation() {
           };
           station: { name: string; provider: string };
           aqi: { aqi: number | null; category: string | null; windowEnd: string };
-        }>("/api/v1/locations/sync", {
-          lat: rounded.lat,
-          lng: rounded.lng,
-          city: opts?.city,
-          autoSync: opts?.autoSync ?? location?.autoSync ?? false,
-        });
+        }>("/api/v1/locations/sync", payload);
 
         commitLocation({
           id: data.location.id,
@@ -132,7 +126,24 @@ export function useLiveLocation() {
         setSyncing(false);
       }
     },
-    [commitLocation, location]
+    [commitLocation]
+  );
+
+  const syncCoordinates = useCallback(
+    async (
+      rawLat: number,
+      rawLng: number,
+      opts?: { city?: string; autoSync?: boolean }
+    ) => {
+      const rounded = roundTo500m(rawLat, rawLng);
+      await syncWithPayload({
+        lat: rounded.lat,
+        lng: rounded.lng,
+        city: opts?.city,
+        autoSync: opts?.autoSync ?? location?.autoSync ?? false,
+      });
+    },
+    [location, syncWithPayload]
   );
 
   const syncByInput = useCallback(
@@ -148,13 +159,13 @@ export function useLiveLocation() {
         return;
       }
 
-      // Send city hint to backend sync
-      await syncCoordinates(location?.lat ?? 22.575, location?.lng ?? 88.365, {
+      // City-only sync so backend resolves the city's station and rounded coordinates
+      await syncWithPayload({
         city: trimmed,
         autoSync: location?.autoSync ?? false,
       });
     },
-    [location?.autoSync, location?.lat, location?.lng, syncCoordinates]
+    [location, syncCoordinates, syncWithPayload]
   );
 
   const syncBrowserOnce = useCallback(() => {
@@ -170,41 +181,72 @@ export function useLiveLocation() {
           autoSync: location?.autoSync ?? false,
         });
       },
-      () => {
+      (geoErr) => {
         setSyncing(false);
-        setError("Location permission denied. Enter a city or coordinates.");
+        if (geoErr.code === 1) {
+          setError("Location permission denied. Enter a city or coordinates.");
+        } else if (geoErr.code === 3) {
+          setError("Location timed out. Enter a city or coordinates.");
+        } else {
+          setError("Location unavailable. Enter a city or coordinates.");
+        }
       },
-      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 12_000 }
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 10_000 }
     );
-  }, [location?.autoSync, syncCoordinates]);
+  }, [location, syncCoordinates]);
 
   const toggleAutoSync = useCallback(
     (enabled: boolean) => {
       if (!location) return;
       commitLocation({ ...location, autoSync: enabled });
+      if (enabled) {
+        void syncWithPayload({
+          lat: location.lat,
+          lng: location.lng,
+          city: location.city,
+          autoSync: true,
+        });
+      }
     },
-    [commitLocation, location]
+    [commitLocation, location, syncWithPayload]
   );
 
+  // Periodic auto-sync every 60s + optional browser watchPosition when autoSync is enabled
   useEffect(() => {
     if (!location?.autoSync) return;
-    if (typeof navigator === "undefined" || !navigator.geolocation) return;
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const rounded = roundTo500m(pos.coords.latitude, pos.coords.longitude);
-        if (rounded.lat !== location.lat || rounded.lng !== location.lng) {
-          void syncCoordinates(rounded.lat, rounded.lng, { autoSync: true });
-        }
-      },
-      () => {
-        setError("Live tracking paused — browser location unavailable.");
-      },
-      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 15_000 }
-    );
+    const intervalId = window.setInterval(() => {
+      void syncWithPayload({
+        lat: location.lat,
+        lng: location.lng,
+        city: location.city,
+        autoSync: true,
+      });
+    }, 60_000);
 
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [location?.autoSync, location?.lat, location?.lng, syncCoordinates]);
+    let watchId: number | null = null;
+    if (typeof navigator !== "undefined" && navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const rounded = roundTo500m(pos.coords.latitude, pos.coords.longitude);
+          if (rounded.lat !== location.lat || rounded.lng !== location.lng) {
+            void syncCoordinates(rounded.lat, rounded.lng, { autoSync: true });
+          }
+        },
+        () => {
+          // Keep periodic city auto-sync running even if browser GPS is blocked
+        },
+        { enableHighAccuracy: false, maximumAge: 60_000, timeout: 15_000 }
+      );
+    }
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (watchId !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [location?.autoSync, location?.city, location?.lat, location?.lng, syncCoordinates, syncWithPayload]);
 
   return {
     location,
