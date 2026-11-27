@@ -152,7 +152,6 @@ export async function runIngestObservations() {
         if (!Number.isFinite(val) || !rec.pollutant_id || !rec.last_update) continue;
 
         const pid = rec.pollutant_id.trim().toLowerCase();
-        const isCo = pid === "co";
         const isEightHour = pid === "co" || pid === "o3" || pid === "ozone";
         samples.push({
           provider: "cpcb",
@@ -160,7 +159,8 @@ export async function runIngestObservations() {
           stationName: station.name,
           pollutantRaw: rec.pollutant_id,
           value: val,
-          unitRaw: isCo ? "mg/m³" : "µg/m³",
+          // data.gov.in CPCB dataset reports all pollutants (including CO) in µg/m³
+          unitRaw: "µg/m³",
           averaging: isEightHour ? "8h" : "24h",
           observedAtRaw: rec.last_update,
           kind: "observation",

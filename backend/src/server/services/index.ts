@@ -57,7 +57,7 @@ import {
   sanitiseReportDescription,
   verifyPassword,
 } from "@/server/lib/privacy";
-import { checkRateLimit } from "@/server/lib/redis";
+import { cacheGet, cacheSet, checkRateLimit } from "@/server/lib/redis";
 
 export function isAdminEmail(email: string): boolean {
   const admins = (process.env.ADMIN_EMAILS ?? "")
@@ -130,26 +130,27 @@ export async function loginUser(emailRaw: string, password: string) {
 }
 
 export async function getMe(userId: string) {
-  const user = await db.query.users.findFirst({
-    where: eq(users.id, userId),
-    columns: {
-      id: true,
-      email: true,
-      name: true,
-      role: true,
-      avatarColour: true,
-      createdAt: true,
-    },
-  });
+  const [user, profile, userLocs] = await Promise.all([
+    db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        avatarColour: true,
+        createdAt: true,
+      },
+    }),
+    db.query.profiles.findFirst({
+      where: eq(profiles.userId, userId),
+    }),
+    db.query.locations.findMany({
+      where: eq(locations.userId, userId),
+      orderBy: [desc(locations.isDefault), desc(locations.createdAt)],
+    }),
+  ]);
   if (!user) throw new AppError("UNAUTHENTICATED", 401, "User not found");
-
-  const profile = await db.query.profiles.findFirst({
-    where: eq(profiles.userId, userId),
-  });
-  const userLocs = await db.query.locations.findMany({
-    where: eq(locations.userId, userId),
-    orderBy: [desc(locations.isDefault), desc(locations.createdAt)],
-  });
 
   return {
     user,
@@ -415,17 +416,43 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
     throw new AppError("PROVIDER_UNAVAILABLE", 503, "No active stations synced yet");
   }
 
-  const snapshot = await db.query.aqiSnapshots.findFirst({
-    where: eq(aqiSnapshots.stationId, station.id),
-    orderBy: [desc(aqiSnapshots.computedAt)],
-  });
+  const cacheKey = `aqi:current:${station.id}`;
+  const cached = await cacheGet<{
+    aqi: AqiResult;
+    pollutants: Reading[];
+    weather: {
+      observedAt: string;
+      kind: "observation" | "forecast";
+      tempC: number;
+      rhPct: number;
+      windKph: number;
+      windDirDeg: number;
+      precipMm: number;
+      provider: "openmeteo";
+    } | null;
+    station: { id: string; name: string; city: string; provider: string };
+    notices: { code: "provider_outage"; provider: string; lastSuccessAt: string | null }[];
+  }>(cacheKey);
+  if (cached) return cached;
 
-  const latestReadings = await db
-    .select()
-    .from(readings)
-    .where(and(eq(readings.stationId, station.id), eq(readings.kind, "observation")))
-    .orderBy(desc(readings.observedAt))
-    .limit(24);
+  const [snapshot, latestReadings, wx, cpcbStatus] = await Promise.all([
+    db.query.aqiSnapshots.findFirst({
+      where: eq(aqiSnapshots.stationId, station.id),
+      orderBy: [desc(aqiSnapshots.computedAt)],
+    }),
+    db
+      .select()
+      .from(readings)
+      .where(and(eq(readings.stationId, station.id), eq(readings.kind, "observation")))
+      .orderBy(desc(readings.observedAt))
+      .limit(24),
+    db.query.weatherReadings.findFirst({
+      orderBy: [desc(weatherReadings.observedAt)],
+    }),
+    db.query.providerStatus.findFirst({
+      where: eq(providerStatus.provider, "cpcb"),
+    }),
+  ]);
 
   // Deduplicate to latest reading per pollutant
   const byPollutant = new Map<string, Reading>();
@@ -446,14 +473,6 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
       });
     }
   }
-
-  const wx = await db.query.weatherReadings.findFirst({
-    orderBy: [desc(weatherReadings.observedAt)],
-  });
-
-  const cpcbStatus = await db.query.providerStatus.findFirst({
-    where: eq(providerStatus.provider, "cpcb"),
-  });
 
   const notices =
     cpcbStatus && cpcbStatus.consecutiveFailures >= 3
@@ -496,7 +515,7 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
         engineVersion: "cpcb-naqi-2014.1",
       };
 
-  return {
+  const result = {
     aqi: aqiResult,
     pollutants: Array.from(byPollutant.values()),
     weather: wx
@@ -519,6 +538,9 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
     },
     notices,
   };
+
+  await cacheSet(cacheKey, result, 120);
+  return result;
 }
 
 export async function getAqiHistory(
@@ -836,27 +858,26 @@ export async function getOrBuildTodayPlan(
     })
     .returning();
 
-  const savedActivities = [];
-  for (const a of built.activities) {
-    const start = new Date(`${todayStr}T${String(a.startHour).padStart(2, "0")}:00:00+05:30`);
-    const end = new Date(`${todayStr}T${String(a.endHour).padStart(2, "0")}:00:00+05:30`);
-    const [row] = await db
-      .insert(planActivities)
-      .values({
-        planId: savedPlan.id,
-        title: a.title,
-        start,
-        end,
-        setting: a.setting,
-        expectedAqi: a.expectedAqi,
-        expectedCategory: a.expectedCategory,
-        reason: a.reason,
-        indoorAlternative: a.indoorAlternative,
-        userAdded: false,
-      })
-      .returning();
-    savedActivities.push(row);
-  }
+  const savedActivities =
+    built.activities.length > 0
+      ? await db
+          .insert(planActivities)
+          .values(
+            built.activities.map((a) => ({
+              planId: savedPlan.id,
+              title: a.title,
+              start: new Date(`${todayStr}T${String(a.startHour).padStart(2, "0")}:00:00+05:30`),
+              end: new Date(`${todayStr}T${String(a.endHour).padStart(2, "0")}:00:00+05:30`),
+              setting: a.setting,
+              expectedAqi: a.expectedAqi,
+              expectedCategory: a.expectedCategory,
+              reason: a.reason,
+              indoorAlternative: a.indoorAlternative,
+              userAdded: false,
+            }))
+          )
+          .returning()
+      : [];
 
   return {
     plan: savedPlan,
@@ -994,8 +1015,21 @@ export async function getIndoorRecommendations(userId: string, locationId?: stri
 // --- Simulator ---
 
 export async function listEmissionFactors() {
+  const cached = await cacheGet<
+    {
+      mode: "car" | "two_wheeler" | "auto" | "bus" | "metro" | "cycling" | "walking";
+      kgCo2ePerPkm: number;
+      source: string;
+      publication: string;
+      version: string;
+      geography: string;
+      occupancyAssumption: string;
+    }[]
+  >("sim:factors:v1");
+  if (cached) return cached;
+
   const rows = await db.select().from(emissionFactors);
-  return rows.map((r) => ({
+  const mapped = rows.map((r) => ({
     mode: r.mode,
     kgCo2ePerPkm: Number(r.kgCo2ePerPkm),
     source: r.source,
@@ -1004,6 +1038,8 @@ export async function listEmissionFactors() {
     geography: r.geography,
     occupancyAssumption: r.occupancyAssumption,
   }));
+  await cacheSet("sim:factors:v1", mapped, 3600);
+  return mapped;
 }
 
 export async function runCommuteSimulation(input: CommuteSimRequest) {
