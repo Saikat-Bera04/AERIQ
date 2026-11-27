@@ -234,65 +234,78 @@ export default function PlannerPage() {
                         transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
                       }}
                     >
-                      <PaperCard className="flex items-start justify-between gap-4 [backface-visibility:hidden]">
-                        <div className="flex flex-col gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-[10.5px] tracking-[0.12em] uppercase text-[var(--muted2)]">
-                              {timeRange}
-                            </span>
-                            <Chip
-                              variant={act.setting === "outdoor" ? "lime" : "ink"}
+                      <div
+                        className={flipped ? "pointer-events-none" : ""}
+                        style={{
+                          backfaceVisibility: "hidden",
+                          WebkitBackfaceVisibility: "hidden",
+                          transform: "rotateY(0deg)",
+                        }}
+                      >
+                        <PaperCard className="flex items-start justify-between gap-4">
+                          <div className="flex flex-col gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-[10.5px] tracking-[0.12em] uppercase text-[var(--muted2)]">
+                                {timeRange}
+                              </span>
+                              <Chip
+                                variant={act.setting === "outdoor" ? "lime" : "ink"}
+                              >
+                                {act.setting}
+                              </Chip>
+                              <AqiBadge category={cat} value={act.expectedAqi} />
+                            </div>
+                            <h3
+                              className={`text-[17px] font-medium tracking-[-0.02em] ${
+                                act.completedAt ? "line-through opacity-55" : ""
+                              }`}
                             >
-                              {act.setting}
-                            </Chip>
-                            <AqiBadge category={cat} value={act.expectedAqi} />
+                              {act.title}
+                            </h3>
+                            <p className="text-[13.5px] text-[var(--muted)]">
+                              {act.reason}
+                            </p>
+
+                            {act.indoorAlternative && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setFlippedIds((prev) => ({ ...prev, [act.id]: true }))
+                                }
+                                className="self-start mt-1 px-2.5 py-1 rounded-[4px] border border-[var(--rule)] font-mono text-[10px] tracking-[0.12em] uppercase hover:border-[var(--ink)] cursor-pointer"
+                              >
+                                Swap to indoor →
+                              </button>
+                            )}
                           </div>
-                          <h3
-                            className={`text-[17px] font-medium tracking-[-0.02em] ${
-                              act.completedAt ? "line-through opacity-55" : ""
+
+                          <button
+                            type="button"
+                            onClick={() => void toggleComplete(act)}
+                            aria-label={`Mark ${act.title} complete`}
+                            className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 transition-transform duration-300 cursor-pointer ${
+                              act.completedAt
+                                ? "bg-[var(--lime)] border-[var(--ink)] scale-105"
+                                : "bg-white border-[var(--rule)] hover:border-[var(--ink)]"
                             }`}
                           >
-                            {act.title}
-                          </h3>
-                          <p className="text-[13.5px] text-[var(--muted)]">
-                            {act.reason}
-                          </p>
-
-                          {act.indoorAlternative && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setFlippedIds((prev) => ({ ...prev, [act.id]: true }))
-                              }
-                              className="self-start mt-1 px-2.5 py-1 rounded-[4px] border border-[var(--rule)] font-mono text-[10px] tracking-[0.12em] uppercase hover:border-[var(--ink)] cursor-pointer"
-                            >
-                              Swap to indoor →
-                            </button>
-                          )}
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => void toggleComplete(act)}
-                          aria-label={`Mark ${act.title} complete`}
-                          className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 transition-transform duration-300 cursor-pointer ${
-                            act.completedAt
-                              ? "bg-[var(--lime)] border-[var(--ink)] scale-105"
-                              : "bg-white border-[var(--rule)] hover:border-[var(--ink)]"
-                          }`}
-                        >
-                          {act.completedAt && (
-                            <Check className="w-4 h-4 text-[var(--ink)]" />
-                          )}
-                        </button>
-                      </PaperCard>
+                            {act.completedAt && (
+                              <Check className="w-4 h-4 text-[var(--ink)]" />
+                            )}
+                          </button>
+                        </PaperCard>
+                      </div>
 
                       {act.indoorAlternative && (
-                        <PaperCard className="absolute inset-0 flex flex-col justify-between bg-[var(--ink)] text-white border-none [backface-visibility:hidden]">
-                          <div
-                            className="h-full flex flex-col justify-between"
-                            style={{ transform: "rotateY(180deg)" }}
-                          >
+                        <div
+                          className={`absolute inset-0 ${flipped ? "" : "pointer-events-none"}`}
+                          style={{
+                            backfaceVisibility: "hidden",
+                            WebkitBackfaceVisibility: "hidden",
+                            transform: "rotateY(180deg)",
+                          }}
+                        >
+                          <PaperCard className="h-full flex flex-col justify-between bg-[var(--ink)] text-white border-none">
                             <div>
                               <Chip>Indoor alternative</Chip>
                               <h3 className="text-[17px] font-medium mt-2">
@@ -312,8 +325,8 @@ export default function PlannerPage() {
                               <RotateCw className="w-3.5 h-3.5" />
                               Back to original
                             </button>
-                          </div>
-                        </PaperCard>
+                          </PaperCard>
+                        </div>
                       )}
                     </div>
                   </div>
