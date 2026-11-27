@@ -149,6 +149,14 @@ function getSessionUserId(req: IncomingMessage): string | null {
   return verifySessionToken(decodeURIComponent(match[1]));
 }
 
+function sessionCookieHeader(token: string, maxAge = 2592000): string {
+  const isHttps =
+    process.env.NODE_ENV === "production" ||
+    (process.env.AUTH_URL ?? "").startsWith("https://");
+  const sameSite = isHttps ? "SameSite=None; Secure" : "SameSite=Lax";
+  return `aeriq_session=${encodeURIComponent(token)}; HttpOnly; ${sameSite}; Path=/; Max-Age=${maxAge}`;
+}
+
 export async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse
@@ -156,7 +164,7 @@ export async function handleRequest(
   const start = Date.now();
   const requestId = createRequestId();
   const url = new URL(req.url ?? "/", "http://localhost");
-  const path = url.pathname;
+  const path = url.pathname.replace(/\/{2,}/g, "/");
   const method = (req.method ?? "GET").toUpperCase();
 
   if (method === "OPTIONS") {
@@ -166,8 +174,8 @@ export async function handleRequest(
   }
 
   try {
-    if (path === "/health" && method === "GET") {
-      sendJson(req, res, 200, okEnvelope({ status: "ok" }));
+    if ((path === "/" || path === "/health") && method === "GET") {
+      sendJson(req, res, 200, okEnvelope({ service: "aeriq-backend", status: "ok" }));
       return;
     }
 
@@ -213,7 +221,7 @@ export async function handleRequest(
       const created = await registerUser(body);
       const token = signSessionToken(created.userId);
       sendJson(req, res, 201, okEnvelope(created), {
-        "Set-Cookie": `aeriq_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+        "Set-Cookie": sessionCookieHeader(token),
       });
       return;
     }
@@ -230,14 +238,14 @@ export async function handleRequest(
       const user = await loginUser(body.email, body.password);
       const token = signSessionToken(user.userId);
       sendJson(req, res, 200, okEnvelope({ user }), {
-        "Set-Cookie": `aeriq_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+        "Set-Cookie": sessionCookieHeader(token),
       });
       return;
     }
 
     if (path === "/api/v1/auth/logout" && method === "POST") {
       sendJson(req, res, 200, okEnvelope({ loggedOut: true }), {
-        "Set-Cookie": "aeriq_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+        "Set-Cookie": sessionCookieHeader("", 0),
       });
       return;
     }

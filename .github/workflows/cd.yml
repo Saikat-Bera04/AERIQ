@@ -1,11 +1,8 @@
-name: Frontend CD
+name: AERIQ CD
 
 on:
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/cd.yml"
   workflow_dispatch:
 
 concurrency:
@@ -13,10 +10,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  deploy-frontend:
     name: Deploy Frontend (Vercel)
     runs-on: ubuntu-latest
-    environment: production
+    defaults:
+      run:
+        working-directory: frontend
 
     steps:
       - name: Checkout repository
@@ -33,7 +32,7 @@ jobs:
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Set VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID repository secrets to enable automatic production deployments."
+            echo "::notice::Vercel GitHub integration handles deploys automatically, or set VERCEL_TOKEN/VERCEL_ORG_ID/VERCEL_PROJECT_ID secrets."
           fi
 
       - name: Setup Node.js
@@ -71,3 +70,18 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+  deploy-backend:
+    name: Deploy Backend (Render)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL"
+          else
+            echo "::notice::Render auto-deploys from GitHub main, or set RENDER_DEPLOY_HOOK_URL secret."
+          fi

@@ -1,24 +1,18 @@
-name: Frontend CI
+name: AERIQ CI
 
 on:
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/ci.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/ci.yml"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Typecheck, Lint & Build
+  frontend:
+    name: Frontend — Typecheck, Lint & Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,3 +40,30 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+  backend:
+    name: Backend — Typecheck, Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck & Build
+        run: npm run build
+
+      - name: Run Vitest suite
+        run: npm test
