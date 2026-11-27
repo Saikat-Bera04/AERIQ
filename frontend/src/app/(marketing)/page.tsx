@@ -795,9 +795,9 @@ export default function LandingPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-[14px] mt-[54px]">
             <TiltCard
-              image={ASSETS.sensorMast}
-              bgPosition="22% 70%"
-              bgSize="260%"
+              image="/images/landing/card-planner.jpg"
+              bgPosition="50% 45%"
+              bgSize="cover"
               label="[For students & commuters]"
               title={
                 <>
@@ -811,9 +811,9 @@ export default function LandingPage() {
               className="h-[340px] md:h-[440px]"
             />
             <TiltCard
-              image={ASSETS.islandClouds}
+              image="/images/landing/card-indoor.jpg"
               bgPosition="50% 50%"
-              bgSize="190%"
+              bgSize="cover"
               label="[For families]"
               title={
                 <>
@@ -827,9 +827,9 @@ export default function LandingPage() {
               className="h-[340px] md:h-[440px]"
             />
             <TiltCard
-              image={ASSETS.sensorMast}
-              bgPosition="62% 30%"
-              bgSize="230%"
+              image="/images/landing/card-simulator.jpg"
+              bgPosition="50% 50%"
+              bgSize="cover"
               label="[For changemakers]"
               title={
                 <>

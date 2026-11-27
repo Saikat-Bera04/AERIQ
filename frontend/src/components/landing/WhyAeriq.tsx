@@ -3,7 +3,6 @@
 import React from "react";
 import { WobbleCard } from "@/components/ui/wobble-card";
 import { Chip, CtaSquare, HudFrame } from "@/components/ui-aeriq";
-import { ASSETS } from "@/lib/assets";
 
 export function WhyAeriq() {
   return (
@@ -41,11 +40,11 @@ export function WhyAeriq() {
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={ASSETS.islandCutout}
+              src="/images/landing/why-guidance.jpg"
               width={520}
               height={360}
-              alt="Floating moss island"
-              className="absolute -right-4 lg:-right-[18%] -bottom-16 w-[520px] max-w-none object-contain pointer-events-none select-none animate-bob"
+              alt="Minimalist environmental air-quality prism sensor"
+              className="absolute -right-4 lg:-right-[10%] -bottom-10 w-[440px] max-w-none rounded-[18px] object-cover pointer-events-none select-none animate-bob opacity-90"
               style={{ animationDuration: "9s" }}
             />
           </WobbleCard>
@@ -95,11 +94,11 @@ export function WhyAeriq() {
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={ASSETS.sensorMast}
+              src="/images/landing/why-household.jpg"
               width={640}
               height={400}
-              alt="Air quality monitoring station"
-              className="hidden md:block absolute -right-10 md:-right-[30%] lg:-right-[12%] -bottom-10 w-[640px] rounded-[16px] object-cover pointer-events-none select-none"
+              alt="Sunlit modern living room with indoor plants and air purifier"
+              className="hidden md:block absolute -right-10 md:-right-[24%] lg:-right-[8%] -bottom-10 w-[620px] rounded-[16px] object-cover pointer-events-none select-none"
             />
           </WobbleCard>
         </div>

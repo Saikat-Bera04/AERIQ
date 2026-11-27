@@ -7,7 +7,6 @@ import {
   CarouselCardData,
 } from "@/components/ui/apple-cards-carousel";
 import { Chip, FeatureList } from "@/components/ui-aeriq";
-import { ASSETS } from "@/lib/assets";
 
 function ModuleContent({
   lead,
@@ -60,8 +59,8 @@ const APP_MODULES: CarouselCardData[] = [
   {
     category: "Dashboard",
     title: "Today's air, with its source and time.",
-    src: ASSETS.heroStill,
-    objectPosition: "50% 60%",
+    src: "/images/landing/app-dashboard.jpg",
+    objectPosition: "50% 50%",
     content: (
       <ModuleContent
         lead="Know the air before you step out."
@@ -71,15 +70,15 @@ const APP_MODULES: CarouselCardData[] = [
           "Observation vs forecast labels",
           "24h, 7d and 30d history",
         ]}
-        src={ASSETS.heroStill}
-        objectPosition="50% 60%"
+        src="/images/landing/app-dashboard.jpg"
+        objectPosition="50% 50%"
       />
     ),
   },
   {
     category: "Gemini assistant",
     title: "Ask anything about the air you breathe.",
-    src: ASSETS.islandClouds,
+    src: "/images/landing/app-assistant.jpg",
     objectPosition: "50% 50%",
     content: (
       <ModuleContent
@@ -90,7 +89,7 @@ const APP_MODULES: CarouselCardData[] = [
           "Flags stale or missing data",
           "Never gives a diagnosis",
         ]}
-        src={ASSETS.islandClouds}
+        src="/images/landing/app-assistant.jpg"
         objectPosition="50% 50%"
       />
     ),
@@ -98,8 +97,8 @@ const APP_MODULES: CarouselCardData[] = [
   {
     category: "Daily planner",
     title: "Your day, timed to cleaner hours.",
-    src: ASSETS.sensorMast,
-    objectPosition: "22% 70%",
+    src: "/images/landing/card-planner.jpg",
+    objectPosition: "50% 40%",
     content: (
       <ModuleContent
         lead="Move the walk, keep the routine."
@@ -109,16 +108,16 @@ const APP_MODULES: CarouselCardData[] = [
           "One-tap indoor swap",
           "Rebuilds when conditions change",
         ]}
-        src={ASSETS.sensorMast}
-        objectPosition="22% 70%"
+        src="/images/landing/card-planner.jpg"
+        objectPosition="50% 40%"
       />
     ),
   },
   {
     category: "Indoor air coach",
     title: "Cleaner air inside your home.",
-    src: ASSETS.sensorMast,
-    objectPosition: "62% 30%",
+    src: "/images/landing/card-indoor.jpg",
+    objectPosition: "50% 45%",
     content: (
       <ModuleContent
         lead="The air inside matters too."
@@ -128,16 +127,16 @@ const APP_MODULES: CarouselCardData[] = [
           "Cooking, incense and dust tips",
           "HEPA purifier guidance",
         ]}
-        src={ASSETS.sensorMast}
-        objectPosition="62% 30%"
+        src="/images/landing/card-indoor.jpg"
+        objectPosition="50% 45%"
       />
     ),
   },
   {
     category: "Impact simulator",
     title: "See what switching your commute changes.",
-    src: ASSETS.heroStill,
-    objectPosition: "80% 40%",
+    src: "/images/landing/card-simulator.jpg",
+    objectPosition: "50% 50%",
     content: (
       <ModuleContent
         lead="Compare before you commit."
@@ -147,16 +146,16 @@ const APP_MODULES: CarouselCardData[] = [
           "Every assumption listed",
           "Emissions kept separate from exposure",
         ]}
-        src={ASSETS.heroStill}
-        objectPosition="80% 40%"
+        src="/images/landing/card-simulator.jpg"
+        objectPosition="50% 50%"
       />
     ),
   },
   {
     category: "Community map",
     title: "What your neighbours are seeing.",
-    src: ASSETS.islandClouds,
-    objectPosition: "30% 60%",
+    src: "/images/landing/app-community.jpg",
+    objectPosition: "50% 50%",
     content: (
       <ModuleContent
         lead="Local eyes on local air."
@@ -166,8 +165,8 @@ const APP_MODULES: CarouselCardData[] = [
           "Moderation status on every pin",
           "Locations rounded for privacy",
         ]}
-        src={ASSETS.islandClouds}
-        objectPosition="30% 60%"
+        src="/images/landing/app-community.jpg"
+        objectPosition="50% 50%"
       />
     ),
   },
