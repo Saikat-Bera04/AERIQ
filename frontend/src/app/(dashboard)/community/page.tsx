@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { Plus, X } from "lucide-react";
 import {
@@ -11,13 +11,15 @@ import {
   MaskedHeadline,
   SkeletonBlock,
 } from "@/components/ui-aeriq";
-import {
-  MOCK_COMMUNITY_REPORTS,
-  MOCK_OFFICIAL_STATIONS,
-} from "@/mocks/data";
-import { communityReportSchema } from "@/schemas";
-import type { CommunityReport } from "@/types";
+import { api } from "@/lib/api";
 import { formatIST, formatRelativeTime } from "@/lib/format";
+import { useLiveLocation } from "@/hooks/useLiveLocation";
+import type { CommunityReport, OfficialStationPin } from "@/types";
+
+const LeafletMap = dynamic(
+  () => import("@/components/community/LeafletMap").then((m) => m.LeafletMap),
+  { ssr: false, loading: () => <SkeletonBlock height="h-screen" /> }
+);
 
 function RelativeTime({ iso }: { iso: string }) {
   const [text, setText] = React.useState(() => formatIST(iso));
@@ -28,81 +30,145 @@ function RelativeTime({ iso }: { iso: string }) {
   return <>{text}</>;
 }
 
-const LeafletMap = dynamic(
-  () => import("@/components/community/LeafletMap").then((m) => m.LeafletMap),
-  { ssr: false, loading: () => <SkeletonBlock height="h-screen" /> }
-);
-
 const CATEGORIES = [
-  "All",
-  "Smoke",
-  "Dust",
-  "Burning waste",
-  "Vehicle exhaust",
-  "Industrial",
-  "Other",
+  { key: "all", label: "All" },
+  { key: "smoke", label: "Smoke" },
+  { key: "dust", label: "Dust" },
+  { key: "burning_waste", label: "Burning waste" },
+  { key: "vehicle_exhaust", label: "Vehicle exhaust" },
+  { key: "industrial", label: "Industrial" },
+  { key: "other", label: "Other" },
 ] as const;
 
 export default function CommunityPage() {
-  const [reports, setReports] = useState<CommunityReport[]>(
-    MOCK_COMMUNITY_REPORTS
-  );
-  const [filterCat, setFilterCat] = useState<string>("All");
+  const { location: liveLoc } = useLiveLocation();
+  const [reports, setReports] = useState<CommunityReport[]>([]);
+  const [stations, setStations] = useState<OfficialStationPin[]>([]);
+  const [filterCat, setFilterCat] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  // Report form
-  const [cat, setCat] = useState<CommunityReport["category"]>("Smoke");
+  const [cat, setCat] = useState("smoke");
   const [desc, setDesc] = useState("");
   const [formErr, setFormErr] = useState<string | null>(null);
 
+  const loadHotspots = useCallback(async () => {
+    const lat = liveLoc?.lat ?? 22.5726;
+    const lng = liveLoc?.lng ?? 88.3639;
+    const { data } = await api.get<{
+      reports: {
+        id: string;
+        category: string;
+        description: string;
+        status: string;
+        createdAt: string;
+        roundedPoint: { lat: number; lng: number };
+      }[];
+      stations: {
+        id: string;
+        name: string;
+        provider: string;
+        point: { lat: number; lng: number };
+      }[];
+    }>(`/api/v1/community/hotspots?lat=${lat}&lng=${lng}&radiusKm=15`);
+
+    setReports(
+      data.reports.map((r) => ({
+        id: r.id,
+        category: (r.category.replace("_", " ") as CommunityReport["category"]) ?? "Other",
+        description: r.description,
+        status:
+          r.status === "verified"
+            ? "Verified"
+            : r.status === "not_verified"
+              ? "Not verified"
+              : "Pending review",
+        reportedAt: r.createdAt,
+        lat: r.roundedPoint.lat,
+        lng: r.roundedPoint.lng,
+        areaLabel: "Rounded ~500m",
+      }))
+    );
+
+    setStations(
+      data.stations.map((s) => ({
+        id: s.id,
+        name: s.name,
+        provider: s.provider.toUpperCase(),
+        aqi: null,
+        category: "Unavailable",
+        observedAt: new Date().toISOString(),
+        lat: s.point.lat,
+        lng: s.point.lng,
+      }))
+    );
+  }, [liveLoc?.lat, liveLoc?.lng]);
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => void loadHotspots());
+    return () => cancelAnimationFrame(id);
+  }, [loadHotspots]);
+
   const filtered =
-    filterCat === "All"
+    filterCat === "all"
       ? reports
-      : reports.filter((r) => r.category === filterCat);
+      : reports.filter(
+          (r) => r.category.toLowerCase().replace(/\s+/g, "_") === filterCat
+        );
 
   const verifiedCount = reports.filter((r) => r.status === "Verified").length;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = communityReportSchema.safeParse({
-      category: cat,
-      description: desc,
-      lat: 22.5726,
-      lng: 88.3639,
-    });
-    if (!res.success) {
-      setFormErr(res.error.issues[0]?.message ?? "Check report details");
+    if (desc.trim().length < 5) {
+      setFormErr("Describe what you observed (at least 5 characters)");
       return;
     }
     setFormErr(null);
-    const created: CommunityReport = {
-      id: `rep-${Date.now()}`,
-      category: cat,
-      description: desc.trim(),
-      status: "Pending review",
-      reportedAt: new Date().toISOString(),
-      lat: 22.571 + (Math.random() - 0.5) * 0.015,
-      lng: 88.364 + (Math.random() - 0.5) * 0.015,
-      areaLabel: "Nearby (~500m)",
-    };
-    setReports((prev) => [created, ...prev]);
-    setSelectedId(created.id);
-    setDesc("");
-    setSheetOpen(false);
+    try {
+      const { data } = await api.post<{
+        id: string;
+        category: string;
+        description: string;
+        status: string;
+        createdAt: string;
+        roundedPoint: { lat: number; lng: number };
+      }>("/api/v1/community/reports", {
+        category: cat,
+        description: desc.trim(),
+        lat: liveLoc?.lat ?? 22.5726,
+        lng: liveLoc?.lng ?? 88.3639,
+      });
+      const created: CommunityReport = {
+        id: data.id,
+        category: (data.category.replace("_", " ") as CommunityReport["category"]) ?? "Other",
+        description: data.description,
+        status: "Pending review",
+        reportedAt: data.createdAt,
+        lat: data.roundedPoint.lat,
+        lng: data.roundedPoint.lng,
+        areaLabel: "Rounded ~500m",
+      };
+      setReports((prev) => [created, ...prev]);
+      setSelectedId(created.id);
+      setDesc("");
+      setSheetOpen(false);
+    } catch (err) {
+      setFormErr(err instanceof Error ? err.message : "Failed to submit");
+    }
   };
 
   return (
     <div className="relative h-screen w-full overflow-hidden bg-[var(--stage)]">
       <LeafletMap
+        center={[liveLoc?.lat ?? 22.5726, liveLoc?.lng ?? 88.3639]}
         reports={filtered}
-        stations={MOCK_OFFICIAL_STATIONS}
+        stations={stations}
         selectedReportId={selectedId}
         onSelectReport={setSelectedId}
         height="100vh"
       />
 
-      {/* Top-left title */}
       <div className="pointer-events-none fixed left-[18px] md:left-[126px] top-[90px] md:top-[110px] z-20 max-w-md">
         <Chip>Community</Chip>
         <MaskedHeadline className="text-[clamp(32px,4vw,56px)] text-[var(--ink)] mt-3">
@@ -110,19 +176,17 @@ export default function CommunityPage() {
         </MaskedHeadline>
       </div>
 
-      {/* Top-right HUD */}
       <div className="hidden lg:block fixed right-[420px] top-[110px] z-20 pointer-events-none">
         <HudFrame
           chip="Local reports"
           lines={[
             `REPORTS ${reports.length}`,
             `VERIFIED ${verifiedCount}`,
-            "RADIUS 5 KM",
+            "RADIUS 15 KM",
           ]}
         />
       </div>
 
-      {/* Bottom-left legend */}
       <GlassCard
         variant="light"
         className="hidden md:flex flex-col gap-2 fixed left-[126px] bottom-6 z-20 p-3.5 max-w-[300px]"
@@ -143,7 +207,6 @@ export default function CommunityPage() {
         </p>
       </GlassCard>
 
-      {/* Right panel */}
       <GlassCard
         variant="light"
         className="fixed left-3 right-3 bottom-20 md:left-auto md:right-6 md:top-24 md:bottom-6 md:w-[380px] z-20 rounded-[14px] p-4 flex flex-col gap-3 max-h-[42vh] md:max-h-none overflow-hidden"
@@ -151,58 +214,63 @@ export default function CommunityPage() {
         <div className="flex flex-wrap gap-1.5">
           {CATEGORIES.map((c) => (
             <button
-              key={c}
+              key={c.key}
               type="button"
-              onClick={() => setFilterCat(c)}
+              onClick={() => setFilterCat(c.key)}
               className={`px-2 py-1 rounded-[4px] font-mono text-[9.5px] uppercase tracking-[0.1em] cursor-pointer ${
-                filterCat === c
+                filterCat === c.key
                   ? "bg-[var(--lime)] text-[var(--ink)]"
                   : "bg-white/75 border border-[var(--rule)]"
               }`}
             >
-              {c}
+              {c.label}
             </button>
           ))}
         </div>
 
         <div className="overflow-y-auto flex-1 pr-1">
-          <FeatureList
-            items={filtered.map((r, i) => ({
-              index: String(i + 1).padStart(2, "0"),
-              active: selectedId === r.id,
-              onClick: () => setSelectedId(r.id),
-              label: (
-                <div className="flex flex-col gap-0.5 normal-case tracking-normal font-sans">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10.5px] uppercase tracking-[0.1em]">
-                      {r.category}
+          {filtered.length === 0 ? (
+            <p className="text-[13px] text-[var(--muted)] py-6 text-center">
+              No community observations in this area yet.
+            </p>
+          ) : (
+            <FeatureList
+              items={filtered.map((r, i) => ({
+                index: String(i + 1).padStart(2, "0"),
+                active: selectedId === r.id,
+                onClick: () => setSelectedId(r.id),
+                label: (
+                  <div className="flex flex-col gap-0.5 normal-case tracking-normal font-sans">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[10.5px] uppercase tracking-[0.1em]">
+                        {r.category}
+                      </span>
+                      <Chip
+                        variant={
+                          r.status === "Verified"
+                            ? "lime"
+                            : r.status === "Pending review"
+                              ? "ghost"
+                              : "ink"
+                        }
+                      >
+                        {r.status}
+                      </Chip>
+                    </div>
+                    <span className="text-[12.5px] text-[var(--muted)] truncate">
+                      {r.description}
                     </span>
-                    <Chip
-                      variant={
-                        r.status === "Verified"
-                          ? "lime"
-                          : r.status === "Pending review"
-                            ? "ghost"
-                            : "ink"
-                      }
-                    >
-                      {r.status}
-                    </Chip>
+                    <span className="font-mono text-[9.5px] text-[var(--muted2)]">
+                      {r.areaLabel} · <RelativeTime iso={r.reportedAt} />
+                    </span>
                   </div>
-                  <span className="text-[12.5px] text-[var(--muted)] truncate">
-                    {r.description}
-                  </span>
-                  <span className="font-mono text-[9.5px] text-[var(--muted2)]">
-                    {r.areaLabel} · <RelativeTime iso={r.reportedAt} />
-                  </span>
-                </div>
-              ),
-            }))}
-          />
+                ),
+              }))}
+            />
+          )}
         </div>
       </GlassCard>
 
-      {/* Floating report CTA */}
       <button
         type="button"
         onClick={() => setSheetOpen(true)}
@@ -212,7 +280,6 @@ export default function CommunityPage() {
         Report an observation
       </button>
 
-      {/* Report sheet */}
       {sheetOpen && (
         <div className="fixed inset-0 z-[60] bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
           <div
@@ -239,20 +306,18 @@ export default function CommunityPage() {
                   Category
                 </label>
                 <div className="flex flex-wrap gap-1.5">
-                  {CATEGORIES.filter((c) => c !== "All").map((c) => (
+                  {CATEGORIES.filter((c) => c.key !== "all").map((c) => (
                     <button
-                      key={c}
+                      key={c.key}
                       type="button"
-                      onClick={() =>
-                        setCat(c as CommunityReport["category"])
-                      }
+                      onClick={() => setCat(c.key)}
                       className={`px-2.5 py-1.5 rounded-[4px] font-mono text-[10px] uppercase cursor-pointer border ${
-                        cat === c
+                        cat === c.key
                           ? "bg-[var(--lime)] text-[var(--ink)] border-[var(--ink)]"
                           : "bg-[var(--paper)] border-[var(--rule)]"
                       }`}
                     >
-                      {c}
+                      {c.label}
                     </button>
                   ))}
                 </div>

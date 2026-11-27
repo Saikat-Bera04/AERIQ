@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -21,29 +21,92 @@ import {
   PaperCard,
 } from "@/components/ui-aeriq";
 import { ASSETS } from "@/lib/assets";
-import { MOCK_SIMULATOR_ASSUMPTIONS } from "@/mocks/data";
+import { api } from "@/lib/api";
 
 const MODES = [
-  { id: "car", label: "Private car", factor: 0.184, icon: Car },
-  { id: "two_wheeler", label: "Two-wheeler", factor: 0.082, icon: Bike },
-  { id: "auto", label: "Auto-rickshaw", factor: 0.095, icon: Car },
-  { id: "bus", label: "City bus", factor: 0.062, icon: Bus },
-  { id: "metro", label: "Metro", factor: 0.029, icon: Train },
-  { id: "cycling", label: "Cycling", factor: 0, icon: Bike },
-  { id: "walking", label: "Walking", factor: 0, icon: Footprints },
+  { id: "car", label: "Private car", icon: Car },
+  { id: "two_wheeler", label: "Two-wheeler", icon: Bike },
+  { id: "auto", label: "Auto-rickshaw", icon: Car },
+  { id: "bus", label: "City bus", icon: Bus },
+  { id: "metro", label: "Metro", icon: Train },
+  { id: "cycling", label: "Cycling", icon: Bike },
+  { id: "walking", label: "Walking", icon: Footprints },
 ] as const;
+
+interface CommuteSimResult {
+  perMode: {
+    mode: string;
+    kgPerWeek: number;
+    kgPerYear: number;
+    isBaseline: boolean;
+    label?: string;
+  }[];
+  avoidedPerWeek: number;
+  avoidedPerYear: number;
+  best: string;
+  formula: string;
+  assumptions: {
+    mode: string;
+    kgCo2ePerPkm: number;
+    source: string;
+    publication: string;
+    version: string;
+    geography: string;
+    occupancyAssumption: string;
+  }[];
+  factorVersion: string;
+}
 
 export default function SimulatorPage() {
   const [tab, setTab] = useState<"emissions" | "exposure">("emissions");
   const [distanceKm, setDistanceKm] = useState(10);
   const [tripsPerWeek, setTripsPerWeek] = useState(10);
   const [baselineMode, setBaselineMode] = useState<string>("car");
-  const [alternatives, setAlternatives] = useState<string[]>([
-    "bus",
-    "metro",
-    "walking",
-  ]);
+  const [alternatives, setAlternatives] = useState<string[]>(["bus", "metro", "walking"]);
+  const [result, setResult] = useState<CommuteSimResult | null>(null);
+  const [exposureMsg, setExposureMsg] = useState<string | null>(null);
   const [savedToast, setSavedToast] = useState(false);
+
+  const runCalc = async (
+    d = distanceKm,
+    t = tripsPerWeek,
+    base = baselineMode,
+    alts = alternatives
+  ) => {
+    const filteredAlts = alts.filter((a) => a !== base);
+    if (filteredAlts.length === 0) return;
+    const { data } = await api.post<CommuteSimResult>("/api/v1/simulator/commute", {
+      distanceKm: d,
+      tripsPerWeek: t,
+      baselineMode: base,
+      alternativeModes: filteredAlts.slice(0, 3),
+    });
+    setResult(data);
+  };
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => void runCalc());
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (tab === "exposure") {
+      api
+        .post<{ available: boolean; reason?: string }>("/api/v1/simulator/exposure", {
+          segments: [{ mode: baselineMode, minutes: 30 }],
+        })
+        .then((res) => {
+          if (!res.data.available) {
+            setExposureMsg(
+              res.data.reason ??
+                "Not enough route-level concentration data for this area yet."
+            );
+          }
+        })
+        .catch(() => {});
+    }
+  }, [tab, baselineMode]);
 
   const toggleAlt = (id: string) => {
     setAlternatives((prev) => {
@@ -53,34 +116,20 @@ export default function SimulatorPage() {
     });
   };
 
-  const results = useMemo(() => {
-    const picked = [baselineMode, ...alternatives.filter((a) => a !== baselineMode)];
-    return picked.map((modeId) => {
-      const m = MODES.find((x) => x.id === modeId) ?? MODES[0];
-      const weekly = Number((distanceKm * m.factor * tripsPerWeek).toFixed(2));
-      return {
-        mode: m.id,
-        label: m.label,
-        factor: m.factor,
-        weeklyKgCo2e: weekly,
-        yearlyKgCo2e: Number((weekly * 52).toFixed(1)),
-        isBaseline: m.id === baselineMode,
-        isZeroTailpipe: m.factor === 0,
-      };
+  const handleSave = async () => {
+    if (!result) return;
+    await api.post("/api/v1/simulator/scenarios", {
+      inputs: {
+        distanceKm,
+        tripsPerWeek,
+        baselineMode,
+        alternativeModes: alternatives.filter((a) => a !== baselineMode).slice(0, 3),
+      },
+      result,
     });
-  }, [distanceKm, tripsPerWeek, baselineMode, alternatives]);
-
-  const baselineResult = results[0];
-  const bestAlt =
-    results
-      .filter((r) => !r.isBaseline)
-      .sort((a, b) => a.weeklyKgCo2e - b.weeklyKgCo2e)[0] ?? baselineResult;
-
-  const avoidedWeekly = Math.max(
-    0,
-    Number((baselineResult.weeklyKgCo2e - bestAlt.weeklyKgCo2e).toFixed(1))
-  );
-  const avoidedYearly = Number((avoidedWeekly * 52).toFixed(0));
+    setSavedToast(true);
+    setTimeout(() => setSavedToast(false), 2500);
+  };
 
   return (
     <div>
@@ -91,7 +140,7 @@ export default function SimulatorPage() {
         rock
         hud={[
           "MODEL EMISSION FACTORS",
-          "VERSION v2.1 (2024)",
+          `VERSION ${result?.factorVersion ?? "v2.1 (2024)"}`,
           "GEOGRAPHY URBAN INDIA",
         ]}
       />
@@ -130,7 +179,6 @@ export default function SimulatorPage() {
 
         {tab === "emissions" ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Inputs (4 columns) */}
             <div className="lg:col-span-4">
               <PaperCard className="flex flex-col gap-5">
                 <div>
@@ -154,9 +202,7 @@ export default function SimulatorPage() {
 
                 <div>
                   <div className="flex justify-between mb-1.5">
-                    <label className="mono text-[var(--ink2)]">
-                      Trips per week
-                    </label>
+                    <label className="mono text-[var(--ink2)]">Trips per week</label>
                     <span className="font-mono text-[12px] font-medium">
                       {tripsPerWeek}
                     </span>
@@ -223,16 +269,23 @@ export default function SimulatorPage() {
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSavedToast(true);
-                    setTimeout(() => setSavedToast(false), 2500);
-                  }}
-                  className="h-11 rounded-[8px] bg-[var(--ink)] text-[var(--lime)] font-mono text-[11px] tracking-[0.14em] uppercase cursor-pointer"
-                >
-                  Save scenario
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runCalc()}
+                    className="flex-1 h-11 rounded-[8px] bg-[var(--ink)] text-[var(--lime)] font-mono text-[11px] tracking-[0.14em] uppercase cursor-pointer"
+                  >
+                    Calculate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSave()}
+                    className="h-11 px-4 rounded-[8px] border border-[var(--rule)] bg-white font-mono text-[11px] tracking-[0.12em] uppercase cursor-pointer hover:border-[var(--ink)]"
+                  >
+                    Save
+                  </button>
+                </div>
+
                 {savedToast && (
                   <p className="font-mono text-[10.5px] text-[var(--leaf)]">
                     Scenario saved to dashboard impact history.
@@ -241,9 +294,7 @@ export default function SimulatorPage() {
               </PaperCard>
             </div>
 
-            {/* Results (8 columns) */}
             <div className="lg:col-span-8 flex flex-col gap-5">
-              {/* Big dark-glass result card over cropped asset 5 */}
               <div className="relative h-[300px] rounded-[12px] overflow-hidden bg-[#1b3122]">
                 <div
                   className="absolute inset-0 bg-cover"
@@ -267,30 +318,31 @@ export default function SimulatorPage() {
                     <span className="mono text-white/80">
                       Estimated avoided emissions
                     </span>
-                    <Chip>{avoidedYearly} kg CO₂e / year</Chip>
+                    <Chip>{result?.avoidedPerYear ?? 0} kg CO₂e / year</Chip>
                   </div>
                   <div>
                     <div className="text-[48px] md:text-[60px] font-medium tracking-[-0.04em] leading-none">
-                      <CountUp value={avoidedWeekly} decimals={1} />{" "}
+                      <CountUp value={result?.avoidedPerWeek ?? 0} decimals={1} />{" "}
                       <span className="font-mono text-[13px] tracking-[0.12em] uppercase opacity-80">
                         kg CO₂e / week
                       </span>
                     </div>
-                    <p className="text-[14px] text-white/80 mt-2">
-                      Switching from {baselineResult.label} to {bestAlt.label}
-                    </p>
+                    {result && (
+                      <p className="text-[14px] text-white/80 mt-2">
+                        Best alternative: {result.best}
+                      </p>
+                    )}
                   </div>
                 </GlassCard>
               </div>
 
-              {/* Horizontal Recharts bar chart */}
               <PaperCard>
                 <Chip>Weekly kg CO₂e by mode</Chip>
                 <div className="h-[220px] mt-4">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
                       layout="vertical"
-                      data={results}
+                      data={result?.perMode ?? []}
                       margin={{ top: 4, right: 24, left: 20, bottom: 4 }}
                     >
                       <XAxis
@@ -301,7 +353,7 @@ export default function SimulatorPage() {
                       />
                       <YAxis
                         type="category"
-                        dataKey="label"
+                        dataKey="mode"
                         axisLine={false}
                         tickLine={false}
                         width={110}
@@ -311,8 +363,8 @@ export default function SimulatorPage() {
                         cursor={{ fill: "rgba(16,41,26,0.04)" }}
                         formatter={(val) => [`${val} kg CO₂e/wk`, "Emissions"]}
                       />
-                      <Bar dataKey="weeklyKgCo2e" radius={[0, 6, 6, 0]} animationDuration={900}>
-                        {results.map((entry) => (
+                      <Bar dataKey="kgPerWeek" radius={[0, 6, 6, 0]} animationDuration={900}>
+                        {(result?.perMode ?? []).map((entry) => (
                           <Cell
                             key={entry.mode}
                             fill={entry.isBaseline ? "#10291a" : "#c6f35c"}
@@ -324,18 +376,14 @@ export default function SimulatorPage() {
                 </div>
               </PaperCard>
 
-              {/* Formula strip */}
-              <PaperCard className="font-mono text-[11.5px] tracking-[0.06em] text-[var(--ink)]">
-                <span className="text-[var(--muted2)]">FORMULA: </span>
-                E = distance × emission factor × trips ={" "}
-                <strong>
-                  {distanceKm} km × {baselineResult.factor} kg/km × {tripsPerWeek}{" "}
-                  = {baselineResult.weeklyKgCo2e} kg CO₂e/week
-                </strong>
-              </PaperCard>
+              {result && (
+                <PaperCard className="font-mono text-[11.5px] tracking-[0.06em] text-[var(--ink)]">
+                  <span className="text-[var(--muted2)]">FORMULA: </span>
+                  <strong>{result.formula}</strong>
+                </PaperCard>
+              )}
             </div>
 
-            {/* Assumptions table (12 columns, always visible) */}
             <div className="lg:col-span-12">
               <PaperCard>
                 <Chip>Assumptions</Chip>
@@ -352,24 +400,23 @@ export default function SimulatorPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--rule)] text-[13.5px]">
-                      {MOCK_SIMULATOR_ASSUMPTIONS.map((row) => (
+                      {(result?.assumptions ?? []).map((row) => (
                         <tr key={row.mode}>
                           <td className="py-2.5 pr-4 font-medium">{row.mode}</td>
                           <td className="py-2.5 pr-4 font-mono text-[12px]">
-                            {row.factorKgPerKm}
+                            {row.kgCo2ePerPkm}
                           </td>
                           <td className="py-2.5 pr-4">{row.source}</td>
                           <td className="py-2.5 pr-4">{row.version}</td>
                           <td className="py-2.5 pr-4">{row.geography}</td>
-                          <td className="py-2.5">{row.occupancy}</td>
+                          <td className="py-2.5">{row.occupancyAssumption}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
                 <p className="font-mono text-[10px] tracking-[0.1em] uppercase text-[var(--muted2)] mt-4">
-                  Estimates only. Real emissions vary with vehicle, load and
-                  route.
+                  Estimates only. Real emissions vary with vehicle, load and route.
                 </p>
               </PaperCard>
             </div>
@@ -377,7 +424,10 @@ export default function SimulatorPage() {
         ) : (
           <PaperCard>
             <EmptyState
-              title="Not enough route-level concentration data for this area yet."
+              title={
+                exposureMsg ??
+                "Not enough route-level concentration data for this area yet."
+              }
               description="Exposure indicators require street-level corridor measurements. Check back as more stations come online."
             />
           </PaperCard>

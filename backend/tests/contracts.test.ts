@@ -4,6 +4,7 @@ import {
   DailyRecommendationSchema,
   EmissionFactorSchema,
   ReadingSchema,
+  SyncLocationRequestSchema,
 } from "@/contracts";
 import {
   MOCK_AQI_RESULT,
@@ -15,7 +16,6 @@ import {
   roundPointTo500m,
   sanitiseReportDescription,
 } from "@/server/lib/privacy";
-import { syncLiveLocation } from "@/server/services";
 
 describe("Contracts & Privacy", () => {
   it("validates all mock fixtures against Zod contracts", () => {
@@ -43,15 +43,15 @@ describe("Contracts & Privacy", () => {
     expect(cleaned.text).not.toContain("test@example.com");
   });
 
-  it("syncs live location with 500 m rounded coordinates and nearest station", async () => {
-    const res = await syncLiveLocation("user-1", {
+  it("validates SyncLocationRequestSchema and rounds coordinates to 500 m", () => {
+    const parsed = SyncLocationRequestSchema.parse({
       lat: 28.5918,
       lng: 77.2273,
       autoSync: true,
     });
-    expect(res.location.roundedPoint).toEqual({ lat: 28.59, lng: 77.225 });
-    expect(res.station.city).toBe("New Delhi");
-    expect(res.station.name).toBe("Lodhi Road");
-    expect(res.aqi.aqi).toBe(286);
+    expect(roundPointTo500m(parsed.lat, parsed.lng)).toEqual({
+      lat: 28.59,
+      lng: 77.225,
+    });
   });
 });

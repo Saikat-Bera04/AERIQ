@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Trash2 } from "lucide-react";
 import { PageHero } from "@/components/layout/PageHero";
 import { Panel } from "@/components/layout/Panel";
 import { Chip, FeatureList, PaperCard } from "@/components/ui-aeriq";
-import { MOCK_LOCATIONS, MOCK_USER } from "@/mocks/data";
+import { api } from "@/lib/api";
 
 const SECTIONS = [
   { id: "profile", label: "Profile" },
@@ -17,15 +19,75 @@ const SECTIONS = [
 ];
 
 export default function SettingsPage() {
-  const [name, setName] = useState(MOCK_USER.fullName);
+  const router = useRouter();
+  const [user, setUser] = useState<{
+    name: string;
+    email: string;
+    createdAt: string;
+  } | null>(null);
+  const [profile, setProfile] = useState<{
+    lifestyle: string;
+    transportModes: string[];
+  } | null>(null);
+  const [locations, setLocations] = useState<
+    { id: string; label: string; city: string; isDefault: boolean }[]
+  >([]);
   const [notifs, setNotifs] = useState({
-    morningSummary: true,
-    aqiCategoryChange: true,
-    planChanged: false,
+    dailySummary: true,
+    categoryChangeAlerts: true,
+    planChangedAlerts: false,
+    quietStart: "22:00",
+    quietEnd: "07:00",
   });
-  const [tempUnit, setTempUnit] = useState<"C" | "F">("C");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTyped, setDeleteTyped] = useState("");
+
+  useEffect(() => {
+    Promise.all([
+      api.get<{
+        user: { name: string; email: string; createdAt: string };
+        profile: { lifestyle: string; transportModes: string[] } | null;
+        locations: { id: string; label: string; city: string; isDefault: boolean }[];
+      }>("/api/v1/me"),
+      api.get<typeof notifs>("/api/v1/notifications"),
+    ]).then(([meRes, notifRes]) => {
+      setUser(meRes.data.user);
+      setProfile(meRes.data.profile);
+      setLocations(meRes.data.locations);
+      setNotifs(notifRes.data);
+    });
+  }, []);
+
+  const toggleNotif = async (
+    key: "dailySummary" | "categoryChangeAlerts" | "planChangedAlerts"
+  ) => {
+    const next = { ...notifs, [key]: !notifs[key] };
+    setNotifs(next);
+    await api.put("/api/v1/notifications", next);
+  };
+
+  const handleDeleteLoc = async (id: string) => {
+    await api.delete(`/api/v1/locations/${id}`);
+    setLocations((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  const handleExport = async () => {
+    const { data } = await api.get("/api/v1/account/export");
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "aeriq-export.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDeleteAccount = async () => {
+    await api.delete("/api/v1/account", { confirm: "DELETE" });
+    router.push("/login");
+  };
 
   return (
     <div>
@@ -35,15 +97,14 @@ export default function SettingsPage() {
         height="30vh"
         crop="50% 45%"
         hud={[
-          `ACCOUNT ${MOCK_USER.email.toUpperCase()}`,
-          `MEMBER SINCE ${MOCK_USER.memberSince.toUpperCase()}`,
-          `LOCATIONS ${MOCK_LOCATIONS.length}`,
+          `ACCOUNT ${(user?.email ?? "LOADING").toUpperCase()}`,
+          `LOCATIONS ${locations.length}`,
+          "PRIVACY FIRST",
         ]}
       />
 
       <Panel>
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Sticky left FeatureList nav */}
           <aside className="lg:col-span-4">
             <div className="lg:sticky lg:top-24">
               <PaperCard>
@@ -58,7 +119,6 @@ export default function SettingsPage() {
             </div>
           </aside>
 
-          {/* Right sections */}
           <div className="lg:col-span-8 flex flex-col gap-6">
             <PaperCard>
               <div id="profile" className="scroll-mt-24 flex flex-col gap-4">
@@ -70,8 +130,8 @@ export default function SettingsPage() {
                     </label>
                     <input
                       type="text"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      value={user?.name ?? ""}
+                      readOnly
                       className="w-full h-11 px-3 rounded-[8px] bg-white border border-[var(--rule)] text-[14px]"
                     />
                   </div>
@@ -81,7 +141,7 @@ export default function SettingsPage() {
                     </label>
                     <input
                       type="email"
-                      value={MOCK_USER.email}
+                      value={user?.email ?? ""}
                       disabled
                       className="w-full h-11 px-3 rounded-[8px] bg-[var(--mist)] border border-[var(--rule)] text-[14px] opacity-75"
                     />
@@ -93,22 +153,33 @@ export default function SettingsPage() {
             <PaperCard>
               <div id="locations" className="scroll-mt-24 flex flex-col gap-3">
                 <Chip>02 · Saved locations</Chip>
-                {MOCK_LOCATIONS.map((loc) => (
-                  <div
-                    key={loc.id}
-                    className="flex items-center justify-between px-3.5 py-2.5 rounded-[8px] bg-white border border-[var(--rule)]"
-                  >
-                    <div>
+                {locations.length === 0 ? (
+                  <p className="text-[13px] text-[var(--muted)]">
+                    No saved locations yet.
+                  </p>
+                ) : (
+                  locations.map((loc) => (
+                    <div
+                      key={loc.id}
+                      className="flex items-center justify-between px-3.5 py-2.5 rounded-[8px] bg-white border border-[var(--rule)]"
+                    >
                       <span className="font-medium text-[14px]">
-                        {loc.city} · {loc.area}
+                        {loc.city} · {loc.label}
                       </span>
-                      <p className="font-mono text-[10px] text-[var(--muted2)]">
-                        {loc.provider} · {loc.station}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        {loc.isDefault && <Chip>Default</Chip>}
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteLoc(loc.id)}
+                          aria-label={`Delete ${loc.city}`}
+                          className="text-[var(--muted2)] hover:text-[var(--aqi-verypoor)] cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    {loc.isDefault && <Chip>Default</Chip>}
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </PaperCard>
 
@@ -116,30 +187,24 @@ export default function SettingsPage() {
               <div id="lifestyle" className="scroll-mt-24 flex flex-col gap-3">
                 <Chip>03 · Lifestyle & routine</Chip>
                 <p className="text-[14px] text-[var(--muted)]">
-                  Current profile: <strong>{MOCK_USER.lifestyle}</strong> ·
-                  Transport: <strong>{MOCK_USER.transport.join(", ")}</strong>
+                  Profile: <strong>{profile?.lifestyle ?? "—"}</strong> · Transport:{" "}
+                  <strong>{profile?.transportModes.join(", ") || "—"}</strong>
                 </p>
               </div>
             </PaperCard>
 
             <PaperCard>
-              <div
-                id="notifications"
-                className="scroll-mt-24 flex flex-col gap-3"
-              >
+              <div id="notifications" className="scroll-mt-24 flex flex-col gap-3">
                 <Chip>04 · Notifications</Chip>
                 {[
+                  { key: "dailySummary" as const, label: "Daily morning summary" },
                   {
-                    key: "morningSummary",
-                    label: "Daily morning summary",
-                  },
-                  {
-                    key: "aqiCategoryChange",
+                    key: "categoryChangeAlerts" as const,
                     label: "AQI category change alerts",
                   },
-                  { key: "planChanged", label: "Plan-changed alerts" },
+                  { key: "planChangedAlerts" as const, label: "Plan-changed alerts" },
                 ].map((item) => {
-                  const val = notifs[item.key as keyof typeof notifs];
+                  const val = notifs[item.key];
                   return (
                     <div
                       key={item.key}
@@ -150,12 +215,7 @@ export default function SettingsPage() {
                         type="button"
                         role="switch"
                         aria-checked={val}
-                        onClick={() =>
-                          setNotifs((prev) => ({
-                            ...prev,
-                            [item.key]: !prev[item.key as keyof typeof prev],
-                          }))
-                        }
+                        onClick={() => void toggleNotif(item.key)}
                         className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 cursor-pointer ${
                           val ? "bg-[var(--lime)]" : "bg-[var(--rule)]"
                         }`}
@@ -175,28 +235,10 @@ export default function SettingsPage() {
             <PaperCard>
               <div id="units" className="scroll-mt-24 flex flex-col gap-3">
                 <Chip>05 · Units & language</Chip>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[14px]">Temperature:</span>
-                    {(["C", "F"] as const).map((u) => (
-                      <button
-                        key={u}
-                        type="button"
-                        onClick={() => setTempUnit(u)}
-                        className={`px-2.5 py-1 rounded-[4px] font-mono text-[11px] cursor-pointer ${
-                          tempUnit === u
-                            ? "bg-[var(--lime)] text-[var(--ink)]"
-                            : "bg-white border border-[var(--rule)]"
-                        }`}
-                      >
-                        °{u}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Chip>English</Chip>
-                    <Chip variant="ghost">More Indian languages soon</Chip>
-                  </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Chip>Metric (°C, µg/m³)</Chip>
+                  <Chip>English</Chip>
+                  <Chip variant="ghost">More Indian languages soon</Chip>
                 </div>
               </div>
             </PaperCard>
@@ -208,35 +250,26 @@ export default function SettingsPage() {
                   AERIQ stores your saved locations, lifestyle preferences, and
                   household age groups. We never store health records.
                 </p>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    className="px-3.5 py-2 rounded-[6px] bg-white border border-[var(--rule)] font-mono text-[10.5px] uppercase cursor-pointer hover:border-[var(--ink)]"
-                  >
-                    Export my data
-                  </button>
-                  <button
-                    type="button"
-                    className="px-3.5 py-2 rounded-[6px] bg-white border border-[var(--rule)] font-mono text-[10.5px] uppercase cursor-pointer hover:border-[var(--ink)]"
-                  >
-                    Delete community reports
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleExport()}
+                  className="self-start px-3.5 py-2 rounded-[6px] bg-white border border-[var(--rule)] font-mono text-[10.5px] uppercase cursor-pointer hover:border-[var(--ink)]"
+                >
+                  Export my data
+                </button>
               </div>
             </PaperCard>
 
             <PaperCard>
               <div id="account" className="scroll-mt-24 flex flex-col gap-3">
                 <Chip>07 · Account</Chip>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setDeleteConfirmOpen(true)}
-                    className="px-4 py-2 rounded-[8px] border border-[var(--aqi-verypoor)] text-[var(--aqi-verypoor)] font-mono text-[11px] uppercase cursor-pointer hover:bg-[var(--aqi-verypoor)] hover:text-white transition-colors"
-                  >
-                    Delete account
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmOpen(true)}
+                  className="self-start px-4 py-2 rounded-[8px] border border-[var(--aqi-verypoor)] text-[var(--aqi-verypoor)] font-mono text-[11px] uppercase cursor-pointer hover:bg-[var(--aqi-verypoor)] hover:text-white transition-colors"
+                >
+                  Delete account
+                </button>
 
                 {deleteConfirmOpen && (
                   <div className="mt-3 p-4 rounded-[10px] bg-white border border-[var(--aqi-verypoor)] flex flex-col gap-3">
@@ -255,6 +288,7 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         disabled={deleteTyped !== "DELETE"}
+                        onClick={() => void handleDeleteAccount()}
                         className="px-4 py-2 rounded-[6px] bg-[var(--aqi-verypoor)] text-white font-mono text-[10.5px] uppercase disabled:opacity-40 cursor-pointer"
                       >
                         Confirm delete

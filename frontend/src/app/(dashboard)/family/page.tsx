@@ -1,14 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
-import { Plus, X } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Plus, Trash2, X } from "lucide-react";
 import { PageHero } from "@/components/layout/PageHero";
 import { Panel, SectionHeader } from "@/components/layout/Panel";
-import { Chip, TiltCard } from "@/components/ui-aeriq";
+import { Chip, SkeletonBlock, TiltCard } from "@/components/ui-aeriq";
 import { ASSETS } from "@/lib/assets";
-import { MOCK_AQI_CURRENT, MOCK_FAMILY } from "@/mocks/data";
-import { familyMemberSchema } from "@/schemas";
-import type { FamilyMember } from "@/types";
+import { api } from "@/lib/api";
+import { useLiveLocation } from "@/hooks/useLiveLocation";
+
+interface ApiFamilyMember {
+  id: string;
+  name: string;
+  ageGroup: "child" | "teen" | "adult" | "older_adult";
+  lifestyle: "student" | "professional" | "homemaker" | "retired" | "other";
+}
 
 const CROPS = [
   { img: ASSETS.sensorMast, pos: "22% 70%" },
@@ -17,50 +23,48 @@ const CROPS = [
 ];
 
 export default function FamilyPage() {
-  const [members, setMembers] = useState<FamilyMember[]>(MOCK_FAMILY);
+  const { location: liveLoc } = useLiveLocation();
+  const [members, setMembers] = useState<ApiFamilyMember[]>([]);
+  const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const [name, setName] = useState("");
-  const [ageGroup, setAgeGroup] = useState<FamilyMember["ageGroup"]>("Adult");
-  const [lifestyle, setLifestyle] = useState("Working professional");
+  const [ageGroup, setAgeGroup] = useState<ApiFamilyMember["ageGroup"]>("adult");
+  const [lifestyle, setLifestyle] = useState<ApiFamilyMember["lifestyle"]>("professional");
   const [error, setError] = useState<string | null>(null);
 
-  const handleAdd = (e: React.FormEvent) => {
+  useEffect(() => {
+    api
+      .get<ApiFamilyMember[]>("/api/v1/family")
+      .then((res) => setMembers(res.data))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = familyMemberSchema.safeParse({
-      name,
-      ageGroup,
-      lifestyle,
-      activities: [],
-    });
-    if (!res.success) {
-      setError(res.error.issues[0]?.message ?? "Check inputs");
+    if (!name.trim()) {
+      setError("Enter a name");
       return;
     }
     setError(null);
-    const initials = name
-      .trim()
-      .split(/\s+/)
-      .map((s) => s[0]?.toUpperCase() ?? "")
-      .join("")
-      .slice(0, 2);
-
-    setMembers((prev) => [
-      ...prev,
-      {
-        id: `fam-${Date.now()}`,
+    try {
+      const { data } = await api.post<ApiFamilyMember>("/api/v1/family", {
         name: name.trim(),
-        initials: initials || "FM",
         ageGroup,
         lifestyle,
-        transport: "Metro",
-        topRecommendation:
-          "Prefer indoor activities during morning peak hours; ventilate mid-afternoon.",
-        cropIndex: prev.length % 3,
-      },
-    ]);
-    setName("");
-    setSheetOpen(false);
+        activities: [],
+      });
+      setMembers((prev) => [...prev, data]);
+      setName("");
+      setSheetOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save member");
+    }
+  };
+
+  const handleRemove = async (id: string) => {
+    await api.delete(`/api/v1/family/${id}`);
+    setMembers((prev) => prev.filter((m) => m.id !== id));
   };
 
   return (
@@ -71,8 +75,8 @@ export default function FamilyPage() {
         crop="70% 40%"
         hud={[
           `MEMBERS ${members.length}`,
-          `LOCATION ${MOCK_AQI_CURRENT.location.city.toUpperCase()}`,
-          `AQI ${MOCK_AQI_CURRENT.aqi} ${MOCK_AQI_CURRENT.category.toUpperCase()}`,
+          `LOCATION ${(liveLoc?.city ?? "YOUR CITY").toUpperCase()}`,
+          `AQI ${liveLoc?.aqi ?? "N/A"} ${(liveLoc?.category ?? "").toUpperCase()}`,
         ]}
       />
 
@@ -83,50 +87,63 @@ export default function FamilyPage() {
           description="Age group and daily routines help AERIQ tailor timing and indoor swaps for each person."
         />
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-[14px]">
-          {members.map((m) => {
-            const crop = CROPS[m.cropIndex % CROPS.length];
-            return (
-              <TiltCard
-                key={m.id}
-                image={crop.img}
-                bgPosition={crop.pos}
-                bgSize="220%"
-                label={`[${m.ageGroup}]`}
-                title={m.name}
-                body={m.topRecommendation}
-                height={360}
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="w-14 h-14 rounded-full bg-[var(--ink)] text-[var(--lime)] font-mono text-[16px] font-medium inline-flex items-center justify-center border border-white/25">
-                    {m.initials}
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    <Chip>{m.lifestyle}</Chip>
-                    <Chip variant="ink">{m.transport}</Chip>
-                  </div>
+        {loading ? (
+          <SkeletonBlock height="h-[360px]" />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-[14px]">
+            {members.map((m, idx) => {
+              const crop = CROPS[idx % CROPS.length];
+              const initials = m.name
+                .split(/\s+/)
+                .map((s) => s[0]?.toUpperCase() ?? "")
+                .join("")
+                .slice(0, 2);
+              return (
+                <div key={m.id} className="relative">
+                  <TiltCard
+                    image={crop.img}
+                    bgPosition={crop.pos}
+                    bgSize="220%"
+                    label={`[${m.ageGroup.replace("_", " ")}]`}
+                    title={m.name}
+                    body="Timed to cleaner outdoor windows and indoor ventilation."
+                    height={360}
+                  >
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="w-14 h-14 rounded-full bg-[var(--ink)] text-[var(--lime)] font-mono text-[16px] font-medium inline-flex items-center justify-center border border-white/25">
+                        {initials}
+                      </span>
+                      <Chip>{m.lifestyle}</Chip>
+                    </div>
+                  </TiltCard>
+                  <button
+                    type="button"
+                    onClick={() => void handleRemove(m.id)}
+                    aria-label={`Remove ${m.name}`}
+                    className="absolute bottom-4 right-4 z-20 p-2 rounded-full bg-black/50 text-white hover:bg-[var(--aqi-verypoor)] cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </TiltCard>
-            );
-          })}
+              );
+            })}
 
-          {/* Add family member card */}
-          <button
-            type="button"
-            onClick={() => setSheetOpen(true)}
-            className="h-[360px] rounded-[12px] border-2 border-dashed border-[var(--rule)] bg-[var(--paper)] hover:border-[var(--ink)] transition-colors flex flex-col items-center justify-center gap-3 p-6 cursor-pointer"
-          >
-            <span className="w-12 h-12 rounded-full bg-[var(--lime)] text-[var(--ink)] inline-flex items-center justify-center">
-              <Plus className="w-6 h-6" />
-            </span>
-            <span className="text-[18px] font-medium tracking-[-0.02em]">
-              Add family member
-            </span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              className="h-[360px] rounded-[12px] border-2 border-dashed border-[var(--rule)] bg-[var(--paper)] hover:border-[var(--ink)] transition-colors flex flex-col items-center justify-center gap-3 p-6 cursor-pointer"
+            >
+              <span className="w-12 h-12 rounded-full bg-[var(--lime)] text-[var(--ink)] inline-flex items-center justify-center">
+                <Plus className="w-6 h-6" />
+              </span>
+              <span className="text-[18px] font-medium tracking-[-0.02em]">
+                Add family member
+              </span>
+            </button>
+          </div>
+        )}
       </Panel>
 
-      {/* Right-side sheet */}
       {sheetOpen && (
         <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex justify-end">
           <div
@@ -158,7 +175,7 @@ export default function FamilyPage() {
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g., Priya Sen"
+                    placeholder="First name"
                     className="h-11 px-3.5 rounded-[8px] bg-[var(--paper)] border border-[var(--rule)] text-[14px]"
                   />
                 </div>
@@ -168,14 +185,14 @@ export default function FamilyPage() {
                   <select
                     value={ageGroup}
                     onChange={(e) =>
-                      setAgeGroup(e.target.value as FamilyMember["ageGroup"])
+                      setAgeGroup(e.target.value as ApiFamilyMember["ageGroup"])
                     }
                     className="h-11 px-3.5 rounded-[8px] bg-[var(--paper)] border border-[var(--rule)] text-[14px]"
                   >
-                    <option value="Child">Child</option>
-                    <option value="Teen">Teen</option>
-                    <option value="Adult">Adult</option>
-                    <option value="Older adult">Older adult</option>
+                    <option value="child">Child</option>
+                    <option value="teen">Teen</option>
+                    <option value="adult">Adult</option>
+                    <option value="older_adult">Older adult</option>
                   </select>
                 </div>
 
@@ -183,14 +200,16 @@ export default function FamilyPage() {
                   <label className="mono text-[var(--ink2)]">Lifestyle</label>
                   <select
                     value={lifestyle}
-                    onChange={(e) => setLifestyle(e.target.value)}
+                    onChange={(e) =>
+                      setLifestyle(e.target.value as ApiFamilyMember["lifestyle"])
+                    }
                     className="h-11 px-3.5 rounded-[8px] bg-[var(--paper)] border border-[var(--rule)] text-[14px]"
                   >
-                    <option>Student</option>
-                    <option>Working professional</option>
-                    <option>Homemaker</option>
-                    <option>Retired</option>
-                    <option>Other</option>
+                    <option value="student">Student</option>
+                    <option value="professional">Working professional</option>
+                    <option value="homemaker">Homemaker</option>
+                    <option value="retired">Retired</option>
+                    <option value="other">Other</option>
                   </select>
                 </div>
 

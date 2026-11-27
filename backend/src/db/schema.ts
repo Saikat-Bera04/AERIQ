@@ -21,16 +21,26 @@ export const geographyPoint = customType<{
   driverData: string;
 }>({
   dataType() {
-    return "geography(Point, 4326)";
+    return "geography";
   },
   toDriver(value) {
     return `SRID=4326;POINT(${value.lng} ${value.lat})`;
   },
   fromDriver(value) {
-    // Parse WKT or hex if returned as text
-    const match = /POINT\(([-\d.]+)\s+([-\d.]+)\)/.exec(String(value));
+    const str = String(value);
+    const match = /POINT\(([-\d.]+)\s+([-\d.]+)\)/.exec(str);
     if (match) {
       return { lng: Number(match[1]), lat: Number(match[2]) };
+    }
+    // Parse PostGIS EWKB hex (little-endian Point with SRID 4326)
+    if (/^[0-9a-fA-F]{42,}$/.test(str)) {
+      const buf = Buffer.from(str, "hex");
+      const le = buf[0] === 1;
+      const hasSrid = (le ? buf.readUInt32LE(1) : buf.readUInt32BE(1)) & 0x20000000;
+      const offset = hasSrid ? 9 : 5;
+      const lng = le ? buf.readDoubleLE(offset) : buf.readDoubleBE(offset);
+      const lat = le ? buf.readDoubleLE(offset + 8) : buf.readDoubleBE(offset + 8);
+      return { lat: Number(lat.toFixed(4)), lng: Number(lng.toFixed(4)) };
     }
     return { lat: 0, lng: 0 };
   },
@@ -456,5 +466,16 @@ export const auditLog = pgTable("audit_log", {
   entity: text("entity").notNull(),
   entityId: text("entity_id").notNull(),
   meta: jsonb("meta").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const geminiUsage = pgTable("gemini_usage", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  route: text("route").notNull(),
+  userIdHash: text("user_id_hash").notNull(),
+  model: text("model").notNull(),
+  tokensIn: integer("tokens_in").notNull().default(0),
+  tokensOut: integer("tokens_out").notNull().default(0),
+  cacheHit: boolean("cache_hit").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

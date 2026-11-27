@@ -1,74 +1,46 @@
-import { GoogleGenAI } from "@google/genai";
-import { SafetyClassificationSchema, type SafetyFlag } from "@/contracts";
-import { SAFETY_CLASSIFIER_PROMPT } from "./prompts";
+import type { SafetyFlag } from "@/contracts";
 
 export const EMERGENCY_FIXED_REPLY =
   "If this is urgent, call 112 or go to the nearest hospital.";
 
-export interface GeminiClientLike {
-  generateJson(params: {
-    systemInstruction: string;
-    prompt: string;
-    temperature?: number;
-    maxOutputTokens?: number;
-  }): Promise<string>;
-}
+const EMERGENCY_PATTERNS: RegExp[] = [
+  /\bchest\s*pain\b/i,
+  /\btrouble\s*breathing\b/i,
+  /\bcan'?t\s*breathe\b/i,
+  /\bcannot\s*breathe\b/i,
+  /\bdifficulty\s*breathing\b/i,
+  /\bshortness\s*of\s*breath\b/i,
+  /\bsevere\s*wheez/i,
+  /\bfaint(ing|ed)?\b/i,
+  /\bblue\s*lips\b/i,
+  /\bsuffocat/i,
+];
 
-export function createSdkGeminiClient(): GeminiClientLike | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+const SYMPTOM_PATTERNS: RegExp[] = [
+  /\bcough(ing)?\b/i,
+  /\bwheez(e|ing)\b/i,
+  /\bsore\s*throat\b/i,
+  /\bthroat\s*irritation\b/i,
+  /\bheadache\b/i,
+  /\basthma\b/i,
+  /\ballerg(y|ies)\b/i,
+  /\bsinus\b/i,
+  /\bburning\s*eyes\b/i,
+  /\bitchy\s*eyes\b/i,
+  /\bbreathless\b/i,
+  /\bsymptom(s)?\b/i,
+  /\bfeel(ing)?\s*sick\b/i,
+];
 
-  const ai = new GoogleGenAI({ apiKey });
-  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
-
-  return {
-    async generateJson({
-      systemInstruction,
-      prompt,
-      temperature = 0.3,
-      maxOutputTokens = 1024,
-    }) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20_000);
-      try {
-        const res = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            systemInstruction,
-            temperature,
-            maxOutputTokens,
-            responseMimeType: "application/json",
-            abortSignal: controller.signal,
-          },
-        });
-        return res.text ?? "{}";
-      } finally {
-        clearTimeout(timeout);
-      }
-    },
-  };
-}
-
-export async function classifySafety(
-  message: string,
-  client?: GeminiClientLike | null
-): Promise<SafetyFlag> {
-  const activeClient = client === undefined ? createSdkGeminiClient() : client;
-  if (!activeClient) {
-    return "none";
+/**
+ * Deterministic rule-based safety classifier (zero Gemini calls).
+ */
+export function classifySafety(message: string): SafetyFlag {
+  for (const re of EMERGENCY_PATTERNS) {
+    if (re.test(message)) return "emergency";
   }
-
-  try {
-    const raw = await activeClient.generateJson({
-      systemInstruction: SAFETY_CLASSIFIER_PROMPT,
-      prompt: message,
-      temperature: 0,
-      maxOutputTokens: 64,
-    });
-    const parsed = SafetyClassificationSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data.flag : "none";
-  } catch {
-    return "none";
+  for (const re of SYMPTOM_PATTERNS) {
+    if (re.test(message)) return "health_symptom";
   }
+  return "none";
 }

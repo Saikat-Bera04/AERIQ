@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, MapPin, Plus, Trash2 } from "lucide-react";
 import { ASSETS } from "@/lib/assets";
+import { api } from "@/lib/api";
 import { createFrameCache, FrameCacheController } from "@/lib/frame-cache";
 import { easeCubicInOut, prefersReducedMotion } from "@/lib/motion";
 import {
@@ -13,23 +14,23 @@ import {
   Mist,
   ProgressBar,
 } from "@/components/ui-aeriq";
-import { useLiveLocation } from "@/hooks/useLiveLocation";
+import { roundTo500m } from "@/hooks/useLiveLocation";
 
 const CITIES = [
-  "Kolkata · Rabindra Bharati",
-  "New Delhi · Lodhi Road",
-  "Bengaluru · BTM Layout",
-  "Mumbai · Bandra Kurla Complex",
-  "Chennai · Alandur",
-  "Hyderabad · Jubilee Hills",
+  { city: "Kolkata", lat: 22.5726, lng: 88.3639 },
+  { city: "Delhi", lat: 28.5918, lng: 77.2273 },
+  { city: "Bengaluru", lat: 12.9166, lng: 77.6101 },
+  { city: "Mumbai", lat: 19.0653, lng: 72.8681 },
+  { city: "Chennai", lat: 13.0025, lng: 80.2061 },
+  { city: "Hyderabad", lat: 17.4319, lng: 78.4071 },
 ];
 
 const LIFESTYLES = [
-  { label: "Student", img: ASSETS.sensorMast, pos: "22% 70%" },
-  { label: "Working professional", img: ASSETS.islandClouds, pos: "50% 50%" },
-  { label: "Homemaker", img: ASSETS.sensorMast, pos: "62% 30%" },
-  { label: "Retired", img: ASSETS.islandClouds, pos: "30% 60%" },
-  { label: "Other", img: ASSETS.heroStill, pos: "50% 50%" },
+  { key: "student" as const, label: "Student", img: ASSETS.sensorMast, pos: "22% 70%" },
+  { key: "professional" as const, label: "Working professional", img: ASSETS.islandClouds, pos: "50% 50%" },
+  { key: "homemaker" as const, label: "Homemaker", img: ASSETS.sensorMast, pos: "62% 30%" },
+  { key: "retired" as const, label: "Retired", img: ASSETS.islandClouds, pos: "30% 60%" },
+  { key: "other" as const, label: "Other", img: ASSETS.heroStill, pos: "50% 50%" },
 ];
 
 const TRANSPORTS = [
@@ -60,36 +61,32 @@ export default function OnboardingPage() {
 
   const [step, setStep] = useState(1);
   const [finishing, setFinishing] = useState(false);
-  const { syncBrowserOnce, location: liveLoc } = useLiveLocation();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Step 1
   const [cityQuery, setCityQuery] = useState("");
-  const [locations, setLocations] = useState([
-    { city: "Kolkata · Rabindra Bharati", isDefault: true },
-  ]);
+  const [locations, setLocations] = useState<
+    { city: string; lat: number; lng: number; isDefault: boolean }[]
+  >([]);
 
   // Step 2
-  const [lifestyle, setLifestyle] = useState("Working professional");
+  const [lifestyle, setLifestyle] = useState<
+    "student" | "professional" | "homemaker" | "retired" | "other"
+  >("professional");
 
   // Step 3
-  const [selectedTransport, setSelectedTransport] = useState<string[]>([
-    "Metro",
-    "Walking",
-  ]);
-  const [selectedActivities, setSelectedActivities] = useState<
-    Record<string, string>
-  >({
+  const [selectedTransport, setSelectedTransport] = useState<string[]>(["Metro"]);
+  const [selectedActivities, setSelectedActivities] = useState<Record<string, string>>({
     "Morning exercise": "07:00",
-    "Evening walk": "18:30",
   });
 
   // Step 4
   const [family, setFamily] = useState<
-    { name: string; ageGroup: string; lifestyle: string }[]
+    { name: string; ageGroup: "child" | "teen" | "adult" | "older_adult"; lifestyle: "student" | "professional" | "homemaker" | "retired" | "other" }[]
   >([]);
   const [famName, setFamName] = useState("");
-  const [famAge, setFamAge] = useState("Adult");
-  const [famLife, setFamLife] = useState("Working professional");
+  const [famAge, setFamAge] = useState<"child" | "teen" | "adult" | "older_adult">("adult");
+  const [famLife, setFamLife] = useState<"student" | "professional" | "homemaker" | "retired" | "other">("professional");
 
   useEffect(() => {
     const video = videoRef.current;
@@ -106,7 +103,6 @@ export default function OnboardingPage() {
     };
   }, []);
 
-  // Scrub cached frames smoothly between steps (0 -> 40 -> 80 -> 120)
   useEffect(() => {
     const targetFrame = (step - 1) * 40;
     const startFrame = currentFrameRef.current;
@@ -132,13 +128,67 @@ export default function OnboardingPage() {
     return () => cancelAnimationFrame(raf);
   }, [step]);
 
-  const handleFinish = () => {
+  const handleUseApproxLocation = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const rounded = roundTo500m(pos.coords.latitude, pos.coords.longitude);
+      setLocations((prev) => [
+        ...prev,
+        {
+          city: "Current area",
+          lat: rounded.lat,
+          lng: rounded.lng,
+          isDefault: prev.length === 0,
+        },
+      ]);
+    });
+  };
+
+  const handleFinish = async () => {
+    setSaveError(null);
     setFinishing(true);
     cacheRef.current?.setWant(120);
     cacheRef.current?.drawWant();
-    setTimeout(() => {
-      router.push("/dashboard");
-    }, 600);
+
+    try {
+      const locsToSave =
+        locations.length > 0
+          ? locations
+          : [{ city: "Kolkata", lat: 22.5726, lng: 88.3639, isDefault: true }];
+
+      for (const loc of locsToSave) {
+        await api.post("/api/v1/locations", {
+          label: loc.city,
+          city: loc.city,
+          point: { lat: loc.lat, lng: loc.lng },
+          isDefault: loc.isDefault,
+        });
+      }
+
+      await api.patch("/api/v1/profile", {
+        lifestyle,
+        transportModes: selectedTransport,
+        activities: Object.entries(selectedActivities).map(([name, preferredTime]) => ({
+          name,
+          preferredTime,
+          flexible: true,
+        })),
+      });
+
+      for (const m of family) {
+        await api.post("/api/v1/family", {
+          name: m.name,
+          ageGroup: m.ageGroup,
+          lifestyle: m.lifestyle,
+          activities: [],
+        });
+      }
+
+      setTimeout(() => router.push("/dashboard"), 600);
+    } catch (err) {
+      setFinishing(false);
+      setSaveError(err instanceof Error ? err.message : "Failed to save onboarding");
+    }
   };
 
   const toggleTransport = (t: string) => {
@@ -150,22 +200,18 @@ export default function OnboardingPage() {
   const toggleActivity = (a: string) => {
     setSelectedActivities((prev) => {
       const next = { ...prev };
-      if (next[a]) {
-        delete next[a];
-      } else {
-        next[a] = "08:00";
-      }
+      if (next[a]) delete next[a];
+      else next[a] = "08:00";
       return next;
     });
   };
 
   const filteredCities = CITIES.filter((c) =>
-    c.toLowerCase().includes(cityQuery.toLowerCase())
+    c.city.toLowerCase().includes(cityQuery.toLowerCase())
   );
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[var(--stage)] flex flex-col items-center justify-center px-4 py-16">
-      {/* Pinned video-frame stage */}
       <div className="fixed inset-0 pointer-events-none">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -190,7 +236,6 @@ export default function OnboardingPage() {
         <Logo />
       </div>
 
-      {/* Centred light-glass card */}
       {!finishing ? (
         <GlassCard
           variant="light"
@@ -207,21 +252,12 @@ export default function OnboardingPage() {
                   type="text"
                   value={cityQuery}
                   onChange={(e) => setCityQuery(e.target.value)}
-                  placeholder="Search Indian city or station..."
+                  placeholder="Search Indian city..."
                   className="flex-1 h-11 px-3.5 rounded-[8px] bg-white/80 border border-[var(--rule)] text-[14px]"
                 />
                 <button
                   type="button"
-                  onClick={() => {
-                    syncBrowserOnce();
-                    const label = `${liveLoc.city} · ${liveLoc.station}`;
-                    if (!locations.some((l) => l.city === label)) {
-                      setLocations((prev) => [
-                        ...prev,
-                        { city: label, isDefault: false },
-                      ]);
-                    }
-                  }}
+                  onClick={handleUseApproxLocation}
                   className="h-11 px-3.5 rounded-[8px] bg-white/80 border border-[var(--rule)] font-mono text-[10.5px] tracking-[0.12em] uppercase inline-flex items-center gap-2 cursor-pointer hover:border-[var(--ink)]"
                 >
                   <MapPin className="w-3.5 h-3.5 text-[var(--leaf)]" />
@@ -232,33 +268,31 @@ export default function OnboardingPage() {
                 We round your location to the nearest area
               </p>
 
-              {cityQuery && (
-                <div className="flex flex-wrap gap-1.5">
-                  {filteredCities.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => {
-                        if (!locations.some((l) => l.city === c)) {
-                          setLocations((prev) => [
-                            ...prev,
-                            { city: c, isDefault: prev.length === 0 },
-                          ]);
-                        }
-                        setCityQuery("");
-                      }}
-                      className="px-2.5 py-1 rounded-[4px] bg-white border border-[var(--rule)] text-[12px] hover:border-[var(--ink)] cursor-pointer"
-                    >
-                      + {c}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="flex flex-wrap gap-1.5">
+                {filteredCities.map((c) => (
+                  <button
+                    key={c.city}
+                    type="button"
+                    onClick={() => {
+                      if (!locations.some((l) => l.city === c.city)) {
+                        setLocations((prev) => [
+                          ...prev,
+                          { ...c, isDefault: prev.length === 0 },
+                        ]);
+                      }
+                      setCityQuery("");
+                    }}
+                    className="px-2.5 py-1 rounded-[4px] bg-white border border-[var(--rule)] text-[12px] hover:border-[var(--ink)] cursor-pointer"
+                  >
+                    + {c.city}
+                  </button>
+                ))}
+              </div>
 
               <div className="flex flex-col gap-2">
                 {locations.map((loc, idx) => (
                   <div
-                    key={loc.city}
+                    key={`${loc.city}-${idx}`}
                     className="flex items-center justify-between px-3.5 py-2.5 rounded-[8px] bg-white/85 border border-[var(--rule)]"
                   >
                     <span className="text-[14px] font-medium">{loc.city}</span>
@@ -278,20 +312,16 @@ export default function OnboardingPage() {
                       >
                         {loc.isDefault ? "Default" : "Set default"}
                       </button>
-                      {locations.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setLocations((prev) =>
-                              prev.filter((_, i) => i !== idx)
-                            )
-                          }
-                          aria-label={`Remove ${loc.city}`}
-                          className="text-[var(--muted2)] hover:text-[var(--aqi-verypoor)] cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLocations((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        aria-label={`Remove ${loc.city}`}
+                        className="text-[var(--muted2)] hover:text-[var(--aqi-verypoor)] cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -307,12 +337,12 @@ export default function OnboardingPage() {
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {LIFESTYLES.map((item) => {
-                  const active = lifestyle === item.label;
+                  const active = lifestyle === item.key;
                   return (
                     <button
-                      key={item.label}
+                      key={item.key}
                       type="button"
-                      onClick={() => setLifestyle(item.label)}
+                      onClick={() => setLifestyle(item.key)}
                       className={`relative h-[150px] sm:h-[200px] rounded-[12px] overflow-hidden text-left p-3.5 flex flex-col justify-between cursor-pointer transition-all ${
                         active
                           ? "border-2 border-[var(--lime)] ring-2 ring-[var(--lime)]/40"
@@ -447,24 +477,30 @@ export default function OnboardingPage() {
                 />
                 <select
                   value={famAge}
-                  onChange={(e) => setFamAge(e.target.value)}
+                  onChange={(e) =>
+                    setFamAge(e.target.value as "child" | "teen" | "adult" | "older_adult")
+                  }
                   className="h-10 px-3 rounded-[8px] bg-white/85 border border-[var(--rule)] text-[14px]"
                 >
-                  <option>Child</option>
-                  <option>Teen</option>
-                  <option>Adult</option>
-                  <option>Older adult</option>
+                  <option value="child">Child</option>
+                  <option value="teen">Teen</option>
+                  <option value="adult">Adult</option>
+                  <option value="older_adult">Older adult</option>
                 </select>
                 <div className="flex gap-2">
                   <select
                     value={famLife}
-                    onChange={(e) => setFamLife(e.target.value)}
+                    onChange={(e) =>
+                      setFamLife(
+                        e.target.value as "student" | "professional" | "homemaker" | "retired" | "other"
+                      )
+                    }
                     className="flex-1 h-10 px-2 rounded-[8px] bg-white/85 border border-[var(--rule)] text-[13px]"
                   >
-                    <option>Student</option>
-                    <option>Working professional</option>
-                    <option>Homemaker</option>
-                    <option>Retired</option>
+                    <option value="student">Student</option>
+                    <option value="professional">Working professional</option>
+                    <option value="homemaker">Homemaker</option>
+                    <option value="retired">Retired</option>
                   </select>
                   <button
                     type="button"
@@ -510,7 +546,12 @@ export default function OnboardingPage() {
             </div>
           )}
 
-          {/* Footer buttons */}
+          {saveError && (
+            <p className="mt-3 font-mono text-[10.5px] text-[var(--aqi-verypoor)]">
+              {saveError}
+            </p>
+          )}
+
           <div className="mt-8 pt-4 border-t border-[rgba(16,41,26,0.12)] flex items-center justify-between gap-3">
             {step > 1 ? (
               <button
@@ -550,7 +591,6 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* Bottom progress */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
         <span className="font-mono text-[10.5px] tracking-[0.14em] uppercase text-[var(--ink2)]">
           STEP {step} / 4

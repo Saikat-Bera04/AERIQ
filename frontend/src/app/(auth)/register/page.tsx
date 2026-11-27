@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthSplitShell } from "@/components/auth/AuthSplitShell";
 import { MonoLabel, ThreeDotLoader } from "@/components/ui-aeriq";
+import { ApiClientError, api } from "@/lib/api";
 import { registerSchema } from "@/schemas";
 
 export default function RegisterPage() {
@@ -26,7 +27,7 @@ export default function RegisterPage() {
     return score;
   }, [password]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const res = registerSchema.safeParse({
       name,
@@ -44,11 +45,26 @@ export default function RegisterPage() {
       setErrors(next);
       return;
     }
+
     setErrors({});
     setLoading(true);
-    setTimeout(() => {
+    try {
+      await api.post("/api/v1/auth/register", {
+        name,
+        email,
+        password,
+        acceptedDisclaimer: true,
+      });
       router.push("/onboarding");
-    }, 450);
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrors({ ...(err.fields ?? {}), form: err.message });
+      } else {
+        setErrors({ form: "Unable to register right now." });
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -71,7 +87,7 @@ export default function RegisterPage() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Aarav Sen"
+            placeholder="Your full name"
             className="h-12 px-4 rounded-[8px] bg-[var(--paper)] border border-[var(--rule)] text-[15px] focus:border-[var(--ink)]"
           />
           {errors.name && (
@@ -171,6 +187,11 @@ export default function RegisterPage() {
         {errors.acceptedDisclaimer && (
           <span className="font-mono text-[10.5px] text-[var(--aqi-verypoor)]">
             {errors.acceptedDisclaimer}
+          </span>
+        )}
+        {errors.form && (
+          <span className="font-mono text-[10.5px] text-[var(--aqi-verypoor)]">
+            {errors.form}
           </span>
         )}
 

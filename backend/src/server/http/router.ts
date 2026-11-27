@@ -3,15 +3,26 @@ import {
   ChatRequestSchema,
   CommuteSimRequestSchema,
   CreateCommunityReportRequestSchema,
+  CreateFamilyMemberRequestSchema,
+  CreateLocationRequestSchema,
+  CreatePlannerActivityRequestSchema,
+  DeleteAccountRequestSchema,
   ExposureRequestSchema,
+  GeneratePlanRequestSchema,
+  HotspotsQuerySchema,
   IndoorProfileSchema,
   IndoorRecommendRequestSchema,
   LoginRequestSchema,
+  ModerationStatusRequestSchema,
+  NotificationPrefsSchema,
+  PatchLocationRequestSchema,
+  PatchPlannerActivityRequestSchema,
+  PatchProfileRequestSchema,
   RecommendRequestSchema,
   RegisterRequestSchema,
+  SaveScenarioRequestSchema,
   SyncLocationRequestSchema,
 } from "@/contracts";
-import { MOCK_EMISSION_FACTORS } from "@/mocks/fixtures";
 import {
   runCleanup,
   runIngestForecast,
@@ -30,29 +41,55 @@ import {
 import { signSessionToken, verifySessionToken } from "@/server/lib/privacy";
 import { checkRateLimit } from "@/server/lib/redis";
 import {
+  addPlannerActivity,
   createCommunityReport,
+  createFamilyMember,
+  createLocation,
+  deleteAccount,
+  deleteCommunityReport,
+  deleteConversation,
+  deleteFamilyMember,
+  deleteLocation,
+  deletePlannerActivity,
+  exportUserData,
   getAqiCurrent,
+  getAqiHistory,
   getAssistantRecommendation,
+  getCommunityHotspots,
+  getConversationMessages,
+  getGeminiUsageStats,
+  getIndoorProfile,
   getIndoorRecommendations,
-  getTodayPlan,
+  getMe,
+  getNotifications,
+  getOrBuildTodayPlan,
+  getWeather,
+  listConversations,
+  listEmissionFactors,
+  listFamily,
+  listLocations,
+  listSimulatorScenarios,
   loginUser,
+  moderateReport,
+  patchLocation,
   registerUser,
   runAssistantChat,
   runCommuteSimulation,
   runExposureSimulation,
+  saveSimulatorScenario,
   syncLiveLocation,
+  togglePlannerActivity,
+  updateIndoorProfile,
+  updateNotifications,
+  upsertProfile,
 } from "@/server/services";
 
-const MAX_BODY_BYTES = 64 * 1024; // 64 KB limit
+const MAX_BODY_BYTES = 64 * 1024;
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const contentType = req.headers["content-type"] ?? "";
   if (!contentType.includes("application/json")) {
-    throw new AppError(
-      "VALIDATION_FAILED",
-      415,
-      "Content-Type must be application/json"
-    );
+    throw new AppError("VALIDATION_FAILED", 415, "Content-Type must be application/json");
   }
 
   return new Promise((resolve, reject) => {
@@ -79,7 +116,18 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin ?? process.env.AUTH_URL ?? "http://localhost:3000";
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+  };
+}
+
 function sendJson(
+  req: IncomingMessage,
   res: ServerResponse,
   status: number,
   body: unknown,
@@ -88,6 +136,7 @@ function sendJson(
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     ...SECURITY_HEADERS,
+    ...corsHeaders(req),
     ...extraHeaders,
   });
   res.end(JSON.stringify(body));
@@ -110,44 +159,48 @@ export async function handleRequest(
   const path = url.pathname;
   const method = (req.method ?? "GET").toUpperCase();
 
+  if (method === "OPTIONS") {
+    res.writeHead(204, { ...SECURITY_HEADERS, ...corsHeaders(req) });
+    res.end();
+    return;
+  }
+
   try {
-    // Health check
     if (path === "/health" && method === "GET") {
-      sendJson(res, 200, okEnvelope({ status: "ok" }));
+      sendJson(req, res, 200, okEnvelope({ status: "ok" }));
       return;
     }
 
-    // Cron routes (protected by CRON_SECRET)
+    // --- Cron routes ---
     if (path.startsWith("/api/cron/")) {
       const auth = req.headers.authorization;
-      const expected = `Bearer ${process.env.CRON_SECRET ?? "replace-with-cron-secret"}`;
-      if (auth !== expected) {
+      if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
         throw new AppError("UNAUTHENTICATED", 401, "Invalid cron secret");
       }
       if (path === "/api/cron/ingest-observations") {
-        sendJson(res, 200, okEnvelope(await runIngestObservations()));
+        sendJson(req, res, 200, okEnvelope(await runIngestObservations()));
         return;
       }
       if (path === "/api/cron/ingest-forecast") {
-        sendJson(res, 200, okEnvelope(await runIngestForecast()));
+        sendJson(req, res, 200, okEnvelope(await runIngestForecast()));
         return;
       }
       if (path === "/api/cron/refresh-plans") {
-        sendJson(res, 200, okEnvelope(await runRefreshPlans()));
+        sendJson(req, res, 200, okEnvelope(await runRefreshPlans()));
         return;
       }
       if (path === "/api/cron/stations-sync") {
-        sendJson(res, 200, okEnvelope(await runStationsSync()));
+        sendJson(req, res, 200, okEnvelope(await runStationsSync()));
         return;
       }
       if (path === "/api/cron/cleanup") {
-        sendJson(res, 200, okEnvelope(await runCleanup()));
+        sendJson(req, res, 200, okEnvelope(await runCleanup()));
         return;
       }
       throw new AppError("NOT_FOUND", 404, "Cron route not found");
     }
 
-    // Public auth routes
+    // --- Public auth routes ---
     if (path === "/api/v1/auth/register" && method === "POST") {
       const ip = req.socket.remoteAddress ?? "unknown";
       const rl = await checkRateLimit(`rl:auth:${ip}`, 10, 900);
@@ -158,7 +211,10 @@ export async function handleRequest(
       }
       const body = RegisterRequestSchema.parse(await readJsonBody(req));
       const created = await registerUser(body);
-      sendJson(res, 201, okEnvelope(created));
+      const token = signSessionToken(created.userId);
+      sendJson(req, res, 201, okEnvelope(created), {
+        "Set-Cookie": `aeriq_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
+      });
       return;
     }
 
@@ -173,51 +229,107 @@ export async function handleRequest(
       const body = LoginRequestSchema.parse(await readJsonBody(req));
       const user = await loginUser(body.email, body.password);
       const token = signSessionToken(user.userId);
-      sendJson(res, 200, okEnvelope({ user }), {
+      sendJson(req, res, 200, okEnvelope({ user }), {
         "Set-Cookie": `aeriq_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`,
       });
       return;
     }
 
-    // Session required for all other /api/v1/* routes
+    if (path === "/api/v1/auth/logout" && method === "POST") {
+      sendJson(req, res, 200, okEnvelope({ loggedOut: true }), {
+        "Set-Cookie": "aeriq_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+      });
+      return;
+    }
+
+    // --- Protected routes (session required) ---
     const userId = getSessionUserId(req);
-    if (!userId && process.env.USE_MOCKS !== "true") {
+    if (!userId) {
       throw new AppError("UNAUTHENTICATED", 401, "Sign in required");
     }
-    const effectiveUserId = userId ?? "mock-user-1";
 
-    // General rate limit (300 per 5 min)
-    const genRl = await checkRateLimit(`rl:gen:${effectiveUserId}`, 300, 300);
+    const genRl = await checkRateLimit(`rl:gen:${userId}`, 300, 300);
     if (!genRl.allowed) {
       throw new AppError("RATE_LIMITED", 429, "Rate limit exceeded", {
         retryAfterSec: genRl.retryAfterSec,
       });
     }
 
-    if (path === "/api/v1/aqi/current" && method === "GET") {
-      sendJson(res, 200, okEnvelope(await getAqiCurrent()));
+    if (path === "/api/v1/me" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await getMe(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/profile" && method === "PATCH") {
+      const body = PatchProfileRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await upsertProfile(userId, body)));
+      return;
+    }
+
+    if (path === "/api/v1/locations" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await listLocations(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/locations" && method === "POST") {
+      const body = CreateLocationRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 201, okEnvelope(await createLocation(userId, body)));
       return;
     }
 
     if (path === "/api/v1/locations/sync" && method === "POST") {
       const body = SyncLocationRequestSchema.parse(await readJsonBody(req));
-      const synced = await syncLiveLocation(effectiveUserId, body);
-      sendJson(res, 200, okEnvelope(synced));
+      sendJson(req, res, 200, okEnvelope(await syncLiveLocation(userId, body)));
+      return;
+    }
+
+    const locMatch = /^\/api\/v1\/locations\/([^/]+)$/.exec(path);
+    if (locMatch) {
+      if (method === "PATCH") {
+        const body = PatchLocationRequestSchema.parse(await readJsonBody(req));
+        sendJson(req, res, 200, okEnvelope(await patchLocation(userId, locMatch[1], body)));
+        return;
+      }
+      if (method === "DELETE") {
+        sendJson(req, res, 200, okEnvelope(await deleteLocation(userId, locMatch[1])));
+        return;
+      }
+    }
+
+    if (path === "/api/v1/aqi/current" && method === "GET") {
+      const locId = url.searchParams.get("locationId") ?? undefined;
+      const data = await getAqiCurrent(userId, locId);
+      sendJson(req, res, 200, okEnvelope(data, { notices: data.notices }));
+      return;
+    }
+
+    if (path === "/api/v1/aqi/history" && method === "GET") {
+      const locId = url.searchParams.get("locationId") ?? undefined;
+      const range = (url.searchParams.get("range") as "24h" | "7d" | "30d") ?? "24h";
+      sendJson(req, res, 200, okEnvelope(await getAqiHistory(userId, locId, range)));
+      return;
+    }
+
+    if (path === "/api/v1/weather" && method === "GET") {
+      const hours = Number(url.searchParams.get("hours") ?? 12);
+      sendJson(req, res, 200, okEnvelope(await getWeather(hours)));
       return;
     }
 
     if (path === "/api/v1/assistant/recommend" && method === "POST") {
       const body = RecommendRequestSchema.parse(await readJsonBody(req));
       if (body.force) {
-        const rl = await checkRateLimit(`rl:rec:${effectiveUserId}`, 6, 3600);
+        // Rate limit Refresh to 3 per day
+        const rl = await checkRateLimit(`rl:rec:${userId}:${new Date().toISOString().slice(0, 10)}`, 3, 86400);
         if (!rl.allowed) {
-          throw new AppError("RATE_LIMITED", 429, "Refresh limit reached", {
+          throw new AppError("RATE_LIMITED", 429, "Daily refresh limit reached (3/day)", {
             retryAfterSec: rl.retryAfterSec,
           });
         }
       }
-      const rec = await getAssistantRecommendation();
+      const rec = await getAssistantRecommendation(userId, body.locationId, body.force);
       sendJson(
+        req,
         res,
         200,
         okEnvelope(rec, {
@@ -231,20 +343,21 @@ export async function handleRequest(
     }
 
     if (path === "/api/v1/assistant/chat" && method === "POST") {
-      const rl = await checkRateLimit(`rl:chat:${effectiveUserId}`, 30, 3600);
+      const rl = await checkRateLimit(`rl:chat:${userId}`, 30, 3600);
       if (!rl.allowed) {
         throw new AppError("RATE_LIMITED", 429, "Chat limit reached", {
           retryAfterSec: rl.retryAfterSec,
         });
       }
       const body = ChatRequestSchema.parse(await readJsonBody(req));
-      const chatRes = await runAssistantChat(body.message, body.excludeContext);
+      const chatRes = await runAssistantChat(userId, body.message, body);
 
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         ...SECURITY_HEADERS,
+        ...corsHeaders(req),
       });
       const sendEvent = (event: string, data: unknown) => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -253,64 +366,194 @@ export async function handleRequest(
       sendEvent("safety", { flag: chatRes.safetyFlag });
       sendEvent("delta", { text: chatRes.reply.text });
       sendEvent("structured", chatRes.reply);
-      sendEvent("done", { messageId: createRequestId() });
+      sendEvent("done", { messageId: chatRes.messageId, conversationId: chatRes.conversationId });
       res.end();
       return;
     }
 
+    if (path === "/api/v1/assistant/conversations" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await listConversations(userId)));
+      return;
+    }
+
+    const convMatch = /^\/api\/v1\/assistant\/conversations\/([^/]+)$/.exec(path);
+    if (convMatch) {
+      if (method === "GET") {
+        sendJson(req, res, 200, okEnvelope(await getConversationMessages(userId, convMatch[1])));
+        return;
+      }
+      if (method === "DELETE") {
+        sendJson(req, res, 200, okEnvelope(await deleteConversation(userId, convMatch[1])));
+        return;
+      }
+    }
+
     if (path === "/api/v1/planner/today" && method === "GET") {
-      sendJson(res, 200, okEnvelope(getTodayPlan()));
+      const locId = url.searchParams.get("locationId") ?? undefined;
+      sendJson(req, res, 200, okEnvelope(await getOrBuildTodayPlan(userId, locId, false)));
+      return;
+    }
+
+    if (path === "/api/v1/planner/generate" && method === "POST") {
+      const rl = await checkRateLimit(`rl:plan:${userId}`, 12, 3600);
+      if (!rl.allowed) {
+        throw new AppError("RATE_LIMITED", 429, "Planner limit reached", {
+          retryAfterSec: rl.retryAfterSec,
+        });
+      }
+      const body = GeneratePlanRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await getOrBuildTodayPlan(userId, body.locationId, true)));
+      return;
+    }
+
+    if (path === "/api/v1/planner/activities" && method === "POST") {
+      const body = CreatePlannerActivityRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 201, okEnvelope(await addPlannerActivity(userId, body)));
+      return;
+    }
+
+    const actMatch = /^\/api\/v1\/planner\/activities\/([^/]+)$/.exec(path);
+    if (actMatch) {
+      if (method === "PATCH") {
+        const body = PatchPlannerActivityRequestSchema.parse(await readJsonBody(req));
+        sendJson(req, res, 200, okEnvelope(await togglePlannerActivity(userId, actMatch[1], body.completed)));
+        return;
+      }
+      if (method === "DELETE") {
+        sendJson(req, res, 200, okEnvelope(await deletePlannerActivity(userId, actMatch[1])));
+        return;
+      }
+    }
+
+    if (path === "/api/v1/family" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await listFamily(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/family" && method === "POST") {
+      const body = CreateFamilyMemberRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 201, okEnvelope(await createFamilyMember(userId, body)));
+      return;
+    }
+
+    const famMatch = /^\/api\/v1\/family\/([^/]+)$/.exec(path);
+    if (famMatch && method === "DELETE") {
+      sendJson(req, res, 200, okEnvelope(await deleteFamilyMember(userId, famMatch[1])));
+      return;
+    }
+
+    if (path === "/api/v1/indoor/profile" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await getIndoorProfile(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/indoor/profile" && method === "PUT") {
+      const body = IndoorProfileSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await updateIndoorProfile(userId, body)));
       return;
     }
 
     if (path === "/api/v1/indoor/recommendations" && method === "POST") {
-      const raw = await readJsonBody(req);
-      IndoorRecommendRequestSchema.parse(raw);
-      const defaultProfile = IndoorProfileSchema.parse({
-        cookingFuel: "lpg",
-        incense: false,
-        indoorSmoking: false,
-        pets: false,
-        constructionNearby: true,
-        hasPurifier: true,
-        roomSizeM2: 24,
-      });
-      sendJson(res, 200, okEnvelope(getIndoorRecommendations(defaultProfile)));
+      const body = IndoorRecommendRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await getIndoorRecommendations(userId, body.locationId)));
       return;
     }
 
     if (path === "/api/v1/simulator/factors" && method === "GET") {
-      sendJson(res, 200, okEnvelope({ factors: MOCK_EMISSION_FACTORS }));
+      sendJson(req, res, 200, okEnvelope({ factors: await listEmissionFactors() }));
       return;
     }
 
     if (path === "/api/v1/simulator/commute" && method === "POST") {
-      const rl = await checkRateLimit(`rl:sim:${effectiveUserId}`, 60, 3600);
+      const rl = await checkRateLimit(`rl:sim:${userId}`, 60, 3600);
       if (!rl.allowed) {
         throw new AppError("RATE_LIMITED", 429, "Simulator limit reached", {
           retryAfterSec: rl.retryAfterSec,
         });
       }
       const body = CommuteSimRequestSchema.parse(await readJsonBody(req));
-      sendJson(res, 200, okEnvelope(runCommuteSimulation(body)));
+      sendJson(req, res, 200, okEnvelope(await runCommuteSimulation(body)));
       return;
     }
 
     if (path === "/api/v1/simulator/exposure" && method === "POST") {
       const body = ExposureRequestSchema.parse(await readJsonBody(req));
-      sendJson(res, 200, okEnvelope(runExposureSimulation(body.segments)));
+      sendJson(req, res, 200, okEnvelope(runExposureSimulation(body.segments)));
+      return;
+    }
+
+    if (path === "/api/v1/simulator/scenarios" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await listSimulatorScenarios(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/simulator/scenarios" && method === "POST") {
+      const body = SaveScenarioRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 201, okEnvelope(await saveSimulatorScenario(userId, body.inputs, body.result)));
+      return;
+    }
+
+    if (path === "/api/v1/community/hotspots" && method === "GET") {
+      const q = HotspotsQuerySchema.parse({
+        lat: url.searchParams.get("lat") ?? undefined,
+        lng: url.searchParams.get("lng") ?? undefined,
+        radiusKm: url.searchParams.get("radiusKm") ?? undefined,
+      });
+      sendJson(req, res, 200, okEnvelope(await getCommunityHotspots(q.lat, q.lng, q.radiusKm)));
       return;
     }
 
     if (path === "/api/v1/community/reports" && method === "POST") {
-      const rl = await checkRateLimit(`rl:rep:${effectiveUserId}`, 5, 86400);
+      const rl = await checkRateLimit(`rl:rep:${userId}`, 5, 86400);
       if (!rl.allowed) {
         throw new AppError("RATE_LIMITED", 429, "Daily report limit reached", {
           retryAfterSec: rl.retryAfterSec,
         });
       }
       const body = CreateCommunityReportRequestSchema.parse(await readJsonBody(req));
-      sendJson(res, 201, okEnvelope(createCommunityReport(body)));
+      sendJson(req, res, 201, okEnvelope(await createCommunityReport(userId, body)));
+      return;
+    }
+
+    const repMatch = /^\/api\/v1\/community\/reports\/([^/]+)$/.exec(path);
+    if (repMatch && method === "DELETE") {
+      sendJson(req, res, 200, okEnvelope(await deleteCommunityReport(userId, repMatch[1])));
+      return;
+    }
+
+    const modMatch = /^\/api\/v1\/admin\/reports\/([^/]+)\/status$/.exec(path);
+    if (modMatch && method === "POST") {
+      const body = ModerationStatusRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await moderateReport(userId, modMatch[1], body.status)));
+      return;
+    }
+
+    if (path === "/api/v1/notifications" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await getNotifications(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/notifications" && method === "PUT") {
+      const body = NotificationPrefsSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await updateNotifications(userId, body)));
+      return;
+    }
+
+    if (path === "/api/v1/account/export" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await exportUserData(userId)));
+      return;
+    }
+
+    if (path === "/api/v1/account" && method === "DELETE") {
+      DeleteAccountRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await deleteAccount(userId)), {
+        "Set-Cookie": "aeriq_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+      });
+      return;
+    }
+
+    if (path === "/api/v1/dev/gemini-usage" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope(await getGeminiUsageStats(userId)));
       return;
     }
 
@@ -326,9 +569,7 @@ export async function handleRequest(
         const key = String(issue.path[0] ?? "input");
         if (!fields[key]) fields[key] = issue.message;
       }
-      appErr = new AppError("VALIDATION_FAILED", 422, "Validation failed", {
-        fields,
-      });
+      appErr = new AppError("VALIDATION_FAILED", 422, "Validation failed", { fields });
     } else {
       appErr = new AppError("INTERNAL", 500, "An internal error occurred");
     }
@@ -339,7 +580,7 @@ export async function handleRequest(
       code: appErr.code,
       ms: Date.now() - start,
     });
-    sendJson(res, appErr.status, errorEnvelope(appErr));
+    sendJson(req, res, appErr.status, errorEnvelope(appErr));
     return;
   } finally {
     logRoute({

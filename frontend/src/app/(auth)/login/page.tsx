@@ -5,16 +5,21 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthSplitShell } from "@/components/auth/AuthSplitShell";
 import { MonoLabel, ThreeDotLoader } from "@/components/ui-aeriq";
+import { ApiClientError, api } from "@/lib/api";
 import { loginSchema } from "@/schemas";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [errors, setErrors] = useState<{
+    email?: string;
+    password?: string;
+    form?: string;
+  }>({});
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const res = loginSchema.safeParse({ email, password });
     if (!res.success) {
@@ -26,11 +31,22 @@ export default function LoginPage() {
       setErrors(fieldErrors);
       return;
     }
+
     setErrors({});
     setLoading(true);
-    setTimeout(() => {
-      router.push("/dashboard");
-    }, 450);
+    try {
+      await api.post("/api/v1/auth/login", { email, password });
+      const { data: me } = await api.get<{ onboarded: boolean }>("/api/v1/me");
+      router.push(me.onboarded ? "/dashboard" : "/onboarding");
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setErrors({ ...(err.fields ?? {}), form: err.message });
+      } else {
+        setErrors({ form: "Unable to sign in right now." });
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -84,6 +100,12 @@ export default function LoginPage() {
             </span>
           )}
         </div>
+
+        {errors.form && (
+          <span className="font-mono text-[10.5px] text-[var(--aqi-verypoor)]">
+            {errors.form}
+          </span>
+        )}
 
         <button
           type="submit"

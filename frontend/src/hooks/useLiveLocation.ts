@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { AqiCategory } from "@/lib/format";
+import { api } from "@/lib/api";
 
 export interface SyncedLocationState {
   id: string;
   city: string;
   station: string;
   provider: string;
-  aqi: number;
+  aqi: number | null;
   category: AqiCategory;
   lat: number;
   lng: number;
@@ -16,75 +17,6 @@ export interface SyncedLocationState {
   syncedAt: string;
   autoSync: boolean;
 }
-
-const CITY_CATALOG: Omit<SyncedLocationState, "syncedAt" | "autoSync">[] = [
-  {
-    id: "loc-kol",
-    city: "Kolkata",
-    station: "RABINDRA BHARATI",
-    provider: "CPCB",
-    aqi: 212,
-    category: "Poor",
-    lat: 22.575,
-    lng: 88.365,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-  {
-    id: "loc-del",
-    city: "New Delhi",
-    station: "LODHI ROAD",
-    provider: "CPCB",
-    aqi: 286,
-    category: "Poor",
-    lat: 28.59,
-    lng: 77.225,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-  {
-    id: "loc-blr",
-    city: "Bengaluru",
-    station: "BTM LAYOUT",
-    provider: "CPCB",
-    aqi: 74,
-    category: "Satisfactory",
-    lat: 12.915,
-    lng: 77.61,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-  {
-    id: "loc-bom",
-    city: "Mumbai",
-    station: "BANDRA KURLA COMPLEX",
-    provider: "CPCB",
-    aqi: 138,
-    category: "Moderate",
-    lat: 19.065,
-    lng: 72.87,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-  {
-    id: "loc-maa",
-    city: "Chennai",
-    station: "ALANDUR",
-    provider: "CPCB",
-    aqi: 86,
-    category: "Satisfactory",
-    lat: 13.0,
-    lng: 80.205,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-  {
-    id: "loc-hyd",
-    city: "Hyderabad",
-    station: "JUBILEE HILLS",
-    provider: "CPCB",
-    aqi: 118,
-    category: "Moderate",
-    lat: 17.43,
-    lng: 78.405,
-    observedAt: "2026-11-27T03:00:00.000Z",
-  },
-];
 
 const STORAGE_KEY = "aeriq_live_location";
 const SYNC_EVENT = "aeriq:location-sync";
@@ -96,31 +28,30 @@ export function roundTo500m(lat: number, lng: number) {
   };
 }
 
-function findNearestCity(lat: number, lng: number) {
-  let best = CITY_CATALOG[0];
-  let bestDist = Infinity;
-  for (const c of CITY_CATALOG) {
-    const d = (c.lat - lat) ** 2 + (c.lng - lng) ** 2;
-    if (d < bestDist) {
-      bestDist = d;
-      best = c;
-    }
+export function mapCategorySlug(slug: string | null | undefined): AqiCategory {
+  switch (slug) {
+    case "good":
+      return "Good";
+    case "satisfactory":
+      return "Satisfactory";
+    case "moderate":
+      return "Moderate";
+    case "poor":
+      return "Poor";
+    case "very_poor":
+      return "Very Poor";
+    case "severe":
+      return "Severe";
+    default:
+      return "Unavailable";
   }
-  return best;
 }
 
-const DEFAULT_STATE: SyncedLocationState = {
-  ...CITY_CATALOG[0],
-  syncedAt: "2026-11-27T03:00:00.000Z",
-  autoSync: false,
-};
-
 export function useLiveLocation() {
-  const [location, setLocation] = useState<SyncedLocationState>(DEFAULT_STATE);
+  const [location, setLocation] = useState<SyncedLocationState | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Hydrate from localStorage and subscribe to cross-component sync events
   useEffect(() => {
     const readStored = () => {
       try {
@@ -129,7 +60,7 @@ export function useLiveLocation() {
           setLocation(JSON.parse(raw) as SyncedLocationState);
         }
       } catch {
-        // ignore storage errors
+        // ignore
       }
     };
     const raf = requestAnimationFrame(readStored);
@@ -150,7 +81,7 @@ export function useLiveLocation() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       window.dispatchEvent(new CustomEvent(SYNC_EVENT, { detail: next }));
     } catch {
-      // ignore storage errors
+      // ignore
     }
   }, []);
 
@@ -165,61 +96,43 @@ export function useLiveLocation() {
       setError(null);
 
       try {
-        const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS !== "false";
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-
-        if (!useMocks) {
-          const res = await fetch(`${apiUrl}/api/v1/locations/sync`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              lat: rounded.lat,
-              lng: rounded.lng,
-              city: opts?.city,
-              autoSync: opts?.autoSync ?? location.autoSync,
-            }),
-          });
-          if (res.ok) {
-            const json = await res.json();
-            if (json.ok && json.data) {
-              const d = json.data;
-              commitLocation({
-                id: d.location.id,
-                city: d.location.city,
-                station: d.station.name.toUpperCase(),
-                provider: String(d.station.provider).toUpperCase(),
-                aqi: d.aqi.aqi ?? 0,
-                category: location.category,
-                lat: d.location.roundedPoint.lat,
-                lng: d.location.roundedPoint.lng,
-                observedAt: d.aqi.windowEnd,
-                syncedAt: d.location.syncedAt,
-                autoSync: d.location.autoSync,
-              });
-              return;
-            }
-          }
-        }
-
-        const nearest = findNearestCity(rounded.lat, rounded.lng);
-        const nowIso = new Date().toISOString();
-        commitLocation({
-          ...nearest,
-          city: opts?.city ?? nearest.city,
+        const { data } = await api.post<{
+          location: {
+            id: string;
+            city: string;
+            roundedPoint: { lat: number; lng: number };
+            autoSync: boolean;
+            syncedAt: string;
+          };
+          station: { name: string; provider: string };
+          aqi: { aqi: number | null; category: string | null; windowEnd: string };
+        }>("/api/v1/locations/sync", {
           lat: rounded.lat,
           lng: rounded.lng,
-          observedAt: nowIso,
-          syncedAt: nowIso,
-          autoSync: opts?.autoSync ?? location.autoSync,
+          city: opts?.city,
+          autoSync: opts?.autoSync ?? location?.autoSync ?? false,
         });
-      } catch {
-        setError("Unable to sync location right now.");
+
+        commitLocation({
+          id: data.location.id,
+          city: data.location.city,
+          station: data.station.name.toUpperCase(),
+          provider: data.station.provider.toUpperCase(),
+          aqi: data.aqi.aqi,
+          category: mapCategorySlug(data.aqi.category),
+          lat: data.location.roundedPoint.lat,
+          lng: data.location.roundedPoint.lng,
+          observedAt: data.aqi.windowEnd,
+          syncedAt: data.location.syncedAt,
+          autoSync: data.location.autoSync,
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unable to sync location.");
       } finally {
         setSyncing(false);
       }
     },
-    [commitLocation, location.autoSync, location.category]
+    [commitLocation, location]
   );
 
   const syncByInput = useCallback(
@@ -227,33 +140,21 @@ export function useLiveLocation() {
       const trimmed = query.trim();
       if (!trimmed) return;
 
-      // Support "lat, lng" input
       const coordMatch = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/.exec(trimmed);
       if (coordMatch) {
         await syncCoordinates(Number(coordMatch[1]), Number(coordMatch[2]), {
-          autoSync: location.autoSync,
+          autoSync: location?.autoSync ?? false,
         });
         return;
       }
 
-      // Match city name
-      const match = CITY_CATALOG.find((c) =>
-        c.city.toLowerCase().includes(trimmed.toLowerCase())
-      );
-      if (match) {
-        const nowIso = new Date().toISOString();
-        commitLocation({
-          ...match,
-          observedAt: nowIso,
-          syncedAt: nowIso,
-          autoSync: location.autoSync,
-        });
-        return;
-      }
-
-      setError("City not found. Try Kolkata, New Delhi, Bengaluru, Mumbai, Chennai, Hyderabad, or lat, lng.");
+      // Send city hint to backend sync
+      await syncCoordinates(location?.lat ?? 22.575, location?.lng ?? 88.365, {
+        city: trimmed,
+        autoSync: location?.autoSync ?? false,
+      });
     },
-    [commitLocation, location.autoSync, syncCoordinates]
+    [location?.autoSync, location?.lat, location?.lng, syncCoordinates]
   );
 
   const syncBrowserOnce = useCallback(() => {
@@ -266,27 +167,27 @@ export function useLiveLocation() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         void syncCoordinates(pos.coords.latitude, pos.coords.longitude, {
-          autoSync: location.autoSync,
+          autoSync: location?.autoSync ?? false,
         });
       },
       () => {
         setSyncing(false);
-        setError("Location permission denied. Enter a city or coordinates instead.");
+        setError("Location permission denied. Enter a city or coordinates.");
       },
       { enableHighAccuracy: false, maximumAge: 60_000, timeout: 12_000 }
     );
-  }, [location.autoSync, syncCoordinates]);
+  }, [location?.autoSync, syncCoordinates]);
 
   const toggleAutoSync = useCallback(
     (enabled: boolean) => {
+      if (!location) return;
       commitLocation({ ...location, autoSync: enabled });
     },
     [commitLocation, location]
   );
 
-  // Watch browser position when autoSync is enabled
   useEffect(() => {
-    if (!location.autoSync) return;
+    if (!location?.autoSync) return;
     if (typeof navigator === "undefined" || !navigator.geolocation) return;
 
     const watchId = navigator.geolocation.watchPosition(
@@ -303,16 +204,16 @@ export function useLiveLocation() {
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [location.autoSync, location.lat, location.lng, syncCoordinates]);
+  }, [location?.autoSync, location?.lat, location?.lng, syncCoordinates]);
 
   return {
     location,
     syncing,
     error,
+    commitLocation,
     syncCoordinates,
     syncByInput,
     syncBrowserOnce,
     toggleAutoSync,
-    catalog: CITY_CATALOG,
   };
 }

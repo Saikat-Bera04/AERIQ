@@ -46,8 +46,12 @@ export function parseProviderTimestamp(
   if (hasZone) {
     date = new Date(trimmed);
   } else {
+    // Support DD-MM-YYYY HH:mm:ss (data.gov.in CPCB format)
+    const dmyMatch = /^(\d{2})-(\d{2})-(\d{4})[ T](\d{2}:\d{2}:\d{2})$/.exec(trimmed);
+    const normalized = dmyMatch
+      ? `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}T${dmyMatch[4]}`
+      : trimmed.replace(" ", "T");
     // Provider times without a zone are treated as IST (Asia/Kolkata) and converted to UTC
-    const normalized = trimmed.replace(" ", "T");
     date = fromZonedTime(normalized, "Asia/Kolkata");
   }
 
