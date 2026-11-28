@@ -224,8 +224,25 @@ export default function DashboardPage() {
   }, [liveLoc, rangeTab]);
 
   useEffect(() => {
+    const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+    let lastFetchedAt = Date.now();
     const id = requestAnimationFrame(() => void loadAll());
-    return () => cancelAnimationFrame(id);
+    const interval = setInterval(() => {
+      lastFetchedAt = Date.now();
+      void loadAll();
+    }, FIVE_HOURS_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastFetchedAt >= FIVE_HOURS_MS) {
+        lastFetchedAt = Date.now();
+        void loadAll();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelAnimationFrame(id);
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [loadAll]);
 
   const handleRefreshAi = async () => {

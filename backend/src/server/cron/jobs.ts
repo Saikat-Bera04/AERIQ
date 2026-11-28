@@ -18,7 +18,7 @@ import { fetchLatest as fetchCpcb } from "@/server/providers/cpcb";
 import { fetchLatest as fetchOpenAq } from "@/server/providers/openaq";
 import { fetchLatest as fetchOpenMeteo } from "@/server/providers/openmeteo";
 import { normaliseSamples, type RawProviderSample } from "@/server/providers/normalise";
-import { acquireLock, releaseLock } from "@/server/lib/redis";
+import { acquireLock, redis, releaseLock } from "@/server/lib/redis";
 import type { Pollutant } from "@/contracts";
 
 async function withCronLock<T>(
@@ -280,6 +280,9 @@ export async function runIngestObservations() {
       unavailableReason: aqiRes.unavailableReason,
       engineVersion: aqiRes.engineVersion,
     });
+    if (redis) {
+      await redis.del(`aqi:current:${st.id}`);
+    }
   }
 
   return {

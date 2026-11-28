@@ -3,7 +3,7 @@ name: AERIQ Cron & Keep-Alive
 on:
   schedule:
     - cron: "*/10 * * * *"
-    - cron: "*/15 * * * *"
+    - cron: "0 */5 * * *"
     - cron: "5 * * * *"
     - cron: "*/30 * * * *"
     - cron: "30 20 * * *"
@@ -65,7 +65,7 @@ jobs:
 
           case "$SCHEDULE" in
             "*/10 * * * *") call_live ;;
-            "*/15 * * * *") call_cron "/api/cron/ingest-observations" ;;
+            "0 */5 * * *") call_cron "/api/cron/ingest-observations" ;;
             "5 * * * *") call_cron "/api/cron/ingest-forecast" ;;
             "*/30 * * * *") call_cron "/api/cron/refresh-plans" ;;
             "30 20 * * *") call_cron "/api/cron/stations-sync" ;;
