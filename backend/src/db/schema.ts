@@ -196,6 +196,8 @@ export const profiles = pgTable("profiles", {
   userId: uuid("user_id")
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull().default(""),
+  email: text("email").notNull().default(""),
   lifestyle: lifestyleEnum("lifestyle").notNull().default("professional"),
   transportModes: text("transport_modes").array().notNull().default([]),
   activities: jsonb("activities").notNull().default([]),

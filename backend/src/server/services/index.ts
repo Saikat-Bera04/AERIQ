@@ -101,6 +101,7 @@ export async function registerUser(input: RegisterRequest) {
     })
     .returning({ id: users.id, email: users.email, name: users.name, role: users.role });
 
+  await db.insert(profiles).values({ userId: created.id, name: created.name, email: created.email }).onConflictDoNothing();
   await db.insert(notificationPrefs).values({ userId: created.id }).onConflictDoNothing();
   await db.insert(indoorProfiles).values({ userId: created.id }).onConflictDoNothing();
 
@@ -262,15 +263,23 @@ export async function getMe(userId: string) {
 }
 
 export async function upsertProfile(userId: string, input: PatchProfileRequest) {
-  const existing = await db.query.profiles.findFirst({
-    where: eq(profiles.userId, userId),
-  });
+  const [existing, user] = await Promise.all([
+    db.query.profiles.findFirst({
+      where: eq(profiles.userId, userId),
+    }),
+    db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { name: true, email: true },
+    }),
+  ]);
 
   if (!existing) {
     const [created] = await db
       .insert(profiles)
       .values({
         userId,
+        name: user?.name ?? "",
+        email: user?.email ?? "",
         lifestyle: input.lifestyle ?? "professional",
         transportModes: input.transportModes ?? [],
         activities: input.activities ?? [],
@@ -285,6 +294,7 @@ export async function upsertProfile(userId: string, input: PatchProfileRequest) 
   const [updated] = await db
     .update(profiles)
     .set({
+      ...(user ? { name: user.name, email: user.email } : {}),
       ...(input.lifestyle ? { lifestyle: input.lifestyle } : {}),
       ...(input.transportModes ? { transportModes: input.transportModes } : {}),
       ...(input.activities ? { activities: input.activities } : {}),
