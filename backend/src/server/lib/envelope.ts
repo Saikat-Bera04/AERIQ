@@ -64,9 +64,20 @@ export function createRequestId(): string {
 export function logRoute(entry: {
   requestId: string;
   route: string;
-  code: string;
+  userIdHash?: string | null;
   ms: number;
+  status: number;
+  code: string;
 }) {
   // Never log passwords, tokens, exact coordinates, or message text
-  console.log(JSON.stringify(entry));
+  console.log(
+    JSON.stringify({
+      requestId: entry.requestId,
+      route: entry.route,
+      userIdHash: entry.userIdHash ?? null,
+      ms: entry.ms,
+      status: entry.status,
+      code: entry.code,
+    })
+  );
 }

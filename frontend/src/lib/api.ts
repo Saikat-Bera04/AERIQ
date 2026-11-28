@@ -1,3 +1,5 @@
+import { captureClientException } from "./sentry";
+
 export interface ApiNotice {
   code: string;
   provider?: string;
@@ -23,22 +25,51 @@ export class ApiClientError extends Error {
   }
 }
 
-const API_BASE = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000"
-).replace(/\/+$/, "");
+const API_BASE = "";
+
+export function getCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = /(?:^|;\s*)aeriq_csrf=([^;]+)/.exec(document.cookie);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+const REQUEST_TIMEOUT_MS = 30_000;
 
 async function request<T>(
   path: string,
   init?: RequestInit
 ): Promise<{ data: T; meta: ApiMeta }> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const method = (init?.method ?? "GET").toUpperCase();
+  const csrf = MUTATING_METHODS.has(method) ? getCsrfToken() : null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+      credentials: "include",
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiClientError(
+        408,
+        "TIMEOUT",
+        "Request timed out after 30 seconds. Please try again."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const json = await res.json().catch(() => null);
 
@@ -56,6 +87,9 @@ async function request<T>(
       res.status === 429 && err.retryAfterSec
         ? `${err.message ?? "Rate limit reached"} — try again in ${err.retryAfterSec}s`
         : (err.message ?? `Request failed (${res.status})`);
+    if (res.status >= 500) {
+      captureClientException(new Error(msg), { path, status: res.status, code: err.code });
+    }
     throw new ApiClientError(
       res.status,
       err.code ?? "INTERNAL",

@@ -11,8 +11,9 @@ export const DailyRecommendationSchema = z.object({
   commute: AiSectionSchema,
   study: AiSectionSchema,
   exercise: AiSectionSchema,
-  indoor: AiSectionSchema,
+  indoorAirRecommendations: z.array(z.string().min(1)).min(1),
   sustainableActions: AiSectionSchema,
+  impactExplanation: z.string().min(1),
   dataLimitations: z.array(z.string().min(1)).min(1),
 });
 export type DailyRecommendation = z.infer<typeof DailyRecommendationSchema>;

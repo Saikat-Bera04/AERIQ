@@ -24,10 +24,27 @@ export function computePurifierGuidance(
   };
 }
 
+export const FAMILY_INDOOR_TIPS: Record<
+  "child" | "older_adult",
+  { key: string; title: string; body: string }
+> = {
+  child: {
+    key: "family_child",
+    title: "Protect children's indoor play and study zones",
+    body: "Keep bedroom and playroom windows closed when outdoor air is Moderate or worse, and avoid indoor incense or aerosol sprays.",
+  },
+  older_adult: {
+    key: "family_older_adult",
+    title: "Keep resting areas low-dust for older adults",
+    body: "Prefer damp mopping over dry sweeping and run HEPA filtration in sleeping areas during elevated outdoor particulates.",
+  },
+};
+
 export function evaluateIndoorRules(
   outdoorCategory: AqiCategorySlug,
   profile: IndoorProfile,
-  hourlyWindows: HourlyWindow[]
+  hourlyWindows: HourlyWindow[],
+  familyMembers: { ageGroup: string }[] = []
 ): {
   ventilation: { state: string; nextGoodWindow: string | null };
   matches: IndoorRuleMatch[];
@@ -125,6 +142,15 @@ export function evaluateIndoorRules(
       title: `Run HEPA purifier continuously in ${profile.roomSizeM2} m² room`,
       body: "Keep doors closed while running your HEPA purifier so clean air delivery stays effective.",
     });
+  }
+
+  const hasChild = familyMembers.some((m) => m.ageGroup === "child");
+  const hasOlderAdult = familyMembers.some((m) => m.ageGroup === "older_adult");
+  if (hasChild) {
+    matches.push({ group: "sources", ...FAMILY_INDOOR_TIPS.child });
+  }
+  if (hasOlderAdult) {
+    matches.push({ group: "cleaning", ...FAMILY_INDOOR_TIPS.older_adult });
   }
 
   const purifier =

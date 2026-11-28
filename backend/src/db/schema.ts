@@ -360,19 +360,23 @@ export const conversations = pgTable("conversations", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const messages = pgTable("messages", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  conversationId: uuid("conversation_id")
-    .notNull()
-    .references(() => conversations.id, { onDelete: "cascade" }),
-  role: text("role").notNull(),
-  content: text("content").notNull(),
-  structured: jsonb("structured"),
-  contextSnapshot: jsonb("context_snapshot"),
-  safetyFlag: safetyFlagEnum("safety_flag").notNull().default("none"),
-  model: text("model"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    structured: jsonb("structured"),
+    contextSnapshot: jsonb("context_snapshot"),
+    safetyFlag: safetyFlagEnum("safety_flag").notNull().default("none"),
+    model: text("model"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("messages_conv_created_idx").on(t.conversationId, t.createdAt)]
+);
 
 export const recommendations = pgTable("recommendations", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -389,19 +393,23 @@ export const recommendations = pgTable("recommendations", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const plans = pgTable("plans", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  date: text("date").notNull(),
-  builtAt: timestamp("built_at", { withTimezone: true }).defaultNow().notNull(),
-  dataAsOf: timestamp("data_as_of", { withTimezone: true }).notNull(),
-  inputsHash: text("inputs_hash").notNull(),
-  status: planStatusEnum("status").notNull().default("current"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+export const plans = pgTable(
+  "plans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    date: text("date").notNull(),
+    builtAt: timestamp("built_at", { withTimezone: true }).defaultNow().notNull(),
+    dataAsOf: timestamp("data_as_of", { withTimezone: true }).defaultNow().notNull(),
+    inputsHash: text("inputs_hash").notNull(),
+    status: planStatusEnum("status").notNull().default("current"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("plans_user_date_idx").on(t.userId, t.date)]
+);
 
 export const planActivities = pgTable("plan_activities", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -458,6 +466,21 @@ export const communityReports = pgTable("community_reports", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const reportFlags = pgTable(
+  "report_flags",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    reportId: uuid("report_id")
+      .notNull()
+      .references(() => communityReports.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("report_flags_unique_idx").on(t.reportId, t.userId)]
+);
 
 export const auditLog = pgTable("audit_log", {
   id: uuid("id").defaultRandom().primaryKey(),

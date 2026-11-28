@@ -58,6 +58,7 @@ interface AqiCurrentDto {
     provider: string;
   } | null;
   station: { id: string; name: string; city: string; provider: string };
+  advisories?: { code: string; activity: string; text: string }[];
 }
 
 interface AiRecDto {
@@ -110,13 +111,18 @@ export default function DashboardPage() {
     setError(null);
     try {
       const locParam = liveLoc?.id ? `?locationId=${liveLoc.id}` : "";
-      const [meRes, aqiRes, histRes, recRes, planRes, simRes, comRes] =
+      const [meRes, aqiRes, histRes, forecastRes, recRes, planRes, simRes, comRes] =
         await Promise.all([
           api.get<{ user: { name: string } }>("/api/v1/me"),
           api.get<AqiCurrentDto>(`/api/v1/aqi/current${locParam}`),
           api.get<{ points: { t: string; aqi: number | null; category: string | null }[] }>(
             `/api/v1/aqi/history${locParam ? `${locParam}&` : "?"}range=${rangeTab}`
           ),
+          api
+            .get<{ points: { t: string; value: number; category: string }[] }>(
+              `/api/v1/aqi/forecast${locParam ? `${locParam}&` : "?"}hours=48`
+            )
+            .catch(() => ({ data: { points: [] } })),
           api.post<AiRecDto>("/api/v1/assistant/recommend", {
             locationId: liveLoc?.id,
             force: false,
@@ -152,8 +158,8 @@ export default function DashboardPage() {
       setNotices(aqiRes.meta.notices);
       setAiRec(recRes.data);
       setActivities(planRes.data.activities);
-      setHistory(
-        histRes.data.points.map((pt) => ({
+      setHistory([
+        ...histRes.data.points.map((pt) => ({
           label: formatIST(pt.t, "HH:mm").replace(" IST", ""),
           aqi: pt.aqi,
           isForecast: false,
@@ -161,8 +167,19 @@ export default function DashboardPage() {
           provider: aqiRes.data.station.provider.toUpperCase(),
           station: aqiRes.data.station.name,
           timestamp: pt.t,
-        }))
-      );
+        })),
+        ...(rangeTab === "24h"
+          ? forecastRes.data.points.slice(0, 12).map((pt) => ({
+              label: formatIST(pt.t, "HH:mm").replace(" IST", ""),
+              aqi: Math.round(pt.value),
+              isForecast: true,
+              category: mapCategorySlug(pt.category),
+              provider: "Open-Meteo",
+              station: aqiRes.data.station.name,
+              timestamp: pt.t,
+            }))
+          : []),
+      ]);
 
       const scenarios = simRes.data.scenarios;
       setSavedScenariosCount(scenarios.length);

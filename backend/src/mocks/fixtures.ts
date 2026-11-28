@@ -130,17 +130,15 @@ export const MOCK_DAILY_RECOMMENDATION: DailyRecommendation = {
     summary: "Move high-exertion outdoor cardio indoors today.",
     actions: ["Swap evening run for an indoor strength or mobility session."],
   },
-  indoor: {
-    summary: "Keep street-facing windows closed and use kitchen exhaust.",
-    actions: [
-      "Run kitchen exhaust during gas cooking.",
-      "Use HEPA purifier in closed bedrooms.",
-    ],
-  },
+  indoorAirRecommendations: [
+    "Keep street-facing windows closed and use kitchen exhaust.",
+    "Run HEPA purifier in closed bedrooms.",
+  ],
   sustainableActions: {
     summary: "Metro or bus trips cut per-kilometre tailpipe emissions.",
     actions: ["Choose Metro over private car for today's commute."],
   },
+  impactExplanation: "No saved commute simulator scenarios yet; run the simulator to calculate your CO2e savings.",
   dataLimitations: [
     "Based on CPCB Rabindra Bharati observation at 08:30 IST.",
     "Micro-street traffic spikes are not captured by station averages.",

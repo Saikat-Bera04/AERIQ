@@ -1,5 +1,6 @@
 import { PROVIDER_ENDPOINTS } from "./constants";
 import type { ProviderFetchResult } from "./cpcb";
+import { fetchProviderJson, RawOpenAqPayloadSchema } from "./http";
 
 export async function fetchLatest(params: {
   lat: number;
@@ -12,13 +13,8 @@ export async function fetchLatest(params: {
   url.searchParams.set("radius", String(params.radiusMeters ?? 25000));
   url.searchParams.set("limit", "25");
 
-  const res = await fetch(url.toString(), {
+  const raw = await fetchProviderJson("openaq", url.toString(), RawOpenAqPayloadSchema, {
     headers: { "X-API-Key": apiKey },
-    signal: AbortSignal.timeout(12_000),
   });
-  if (!res.ok) {
-    throw new Error(`OpenAQ provider error: HTTP ${res.status}`);
-  }
-  const raw = await res.json();
   return { raw, fetchedAt: new Date().toISOString() };
 }

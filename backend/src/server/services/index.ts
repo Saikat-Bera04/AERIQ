@@ -19,10 +19,12 @@ import {
   providerStatus,
   readings,
   recommendations,
+  reportFlags,
   sessions,
   simulatorScenarios,
   stations,
   users,
+  verificationTokens,
   weatherReadings,
 } from "@/db/schema";
 import type {
@@ -38,11 +40,15 @@ import type {
   RegisterRequest,
   SyncLocationRequest,
 } from "@/contracts";
+import { computeSubIndex } from "@/server/engines/aqi";
+import { evaluateAdvisories } from "@/server/engines/advisory";
+import { categoryFromAqi } from "@/server/engines/aqi-breakpoints";
 import { computeCommuteEmissions } from "@/server/engines/emissions";
 import { computeExposureIndicator } from "@/server/engines/exposure";
 import { computeFreshness } from "@/server/engines/freshness";
 import { evaluateIndoorRules } from "@/server/engines/indoor";
 import { buildPlan, type HourlyWindow } from "@/server/engines/planner";
+import { fetchLatest as fetchOpenMeteo } from "@/server/providers/openmeteo";
 import { buildContext } from "@/server/ai/context";
 import {
   buildDeterministicDailyFallback,
@@ -52,12 +58,14 @@ import {
 import { classifySafety, EMERGENCY_FIXED_REPLY } from "@/server/ai/safety";
 import { AppError } from "@/server/lib/envelope";
 import {
+  deleteAllUserSessions,
   hashPassword,
+  hashToken,
   roundPointTo500m,
   sanitiseReportDescription,
   verifyPassword,
 } from "@/server/lib/privacy";
-import { cacheGet, cacheSet, checkRateLimit } from "@/server/lib/redis";
+import { cacheGet, cacheSet, checkRateLimit, redis } from "@/server/lib/redis";
 
 export function isAdminEmail(email: string): boolean {
   const admins = (process.env.ADMIN_EMAILS ?? "")
@@ -100,15 +108,16 @@ export async function registerUser(input: RegisterRequest) {
 }
 
 export async function loginUser(emailRaw: string, password: string) {
-  const email = emailRaw.toLowerCase();
-  const lockKey = `login_fail:${email}`;
-  const rl = await checkRateLimit(`login_check:${email}`, 5, 900);
-  if (!rl.allowed) {
+  const email = emailRaw.trim().toLowerCase();
+  const lockKey = `auth:lock:${email}`;
+  const failKey = `auth:fail:${email}`;
+
+  if (await cacheGet<string>(lockKey)) {
     throw new AppError(
       "RATE_LIMITED",
       429,
       "Too many failed login attempts. Try again in 15 minutes.",
-      { retryAfterSec: rl.retryAfterSec }
+      { retryAfterSec: 900 }
     );
   }
 
@@ -116,8 +125,16 @@ export async function loginUser(emailRaw: string, password: string) {
     where: eq(users.email, email),
   });
   if (!user || !(await verifyPassword(password, user.passwordHash))) {
-    await checkRateLimit(lockKey, 5, 900);
+    const rl = await checkRateLimit(failKey, 4, 900);
+    if (!rl.allowed) {
+      await cacheSet(lockKey, "1", 900);
+    }
     throw new AppError("UNAUTHENTICATED", 401, "Invalid email or password");
+  }
+
+  if (redis) {
+    await redis.del(failKey);
+    await redis.del(lockKey);
   }
 
   return {
@@ -127,6 +144,83 @@ export async function loginUser(emailRaw: string, password: string) {
     role: user.role,
     avatarColour: user.avatarColour,
   };
+}
+
+export async function requestPasswordReset(emailRaw: string) {
+  const email = emailRaw.trim().toLowerCase();
+  const user = await db.query.users.findFirst({
+    where: eq(users.email, email),
+  });
+
+  if (user) {
+    const rawToken = crypto.randomBytes(32).toString("base64url");
+    const tokenHash = hashToken(rawToken);
+    const identifier = `reset:${email}`;
+    const expires = new Date(Date.now() + 30 * 60 * 1000);
+
+    await db.delete(verificationTokens).where(eq(verificationTokens.identifier, identifier));
+    await db.insert(verificationTokens).values({
+      identifier,
+      token: tokenHash,
+      expires,
+    });
+
+    const resendKey = process.env.RESEND_API_KEY;
+    if (resendKey) {
+      const appUrl = (process.env.APP_URL ?? process.env.AUTH_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+      const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
+      await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "AERIQ <noreply@aeriq.app>",
+          to: [email],
+          subject: "Reset your AERIQ password",
+          html: `<p>Click below to reset your password (valid for 30 minutes):</p><p><a href="${resetLink}">${resetLink}</a></p>`,
+        }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {});
+    }
+  }
+
+  return { sent: true };
+}
+
+export async function resetPasswordWithToken(rawToken: string, newPassword: string) {
+  const tokenHash = hashToken(rawToken);
+  const now = new Date();
+  const row = await db.query.verificationTokens.findFirst({
+    where: eq(verificationTokens.token, tokenHash),
+  });
+
+  if (!row || !row.identifier.startsWith("reset:") || row.expires <= now) {
+    throw new AppError("VALIDATION_FAILED", 422, "Invalid or expired reset token");
+  }
+
+  const email = row.identifier.slice("reset:".length);
+  const user = await db.query.users.findFirst({
+    where: eq(users.email, email),
+  });
+  if (!user) {
+    throw new AppError("VALIDATION_FAILED", 422, "Invalid or expired reset token");
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  await db
+    .update(users)
+    .set({ passwordHash, updatedAt: new Date() })
+    .where(eq(users.id, user.id));
+
+  await db
+    .delete(verificationTokens)
+    .where(eq(verificationTokens.token, tokenHash));
+
+  await deleteAllUserSessions(user.id);
+
+  return { reset: true };
 }
 
 export async function getMe(userId: string) {
@@ -433,7 +527,28 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
     station: { id: string; name: string; city: string; provider: string };
     notices: { code: "provider_outage"; provider: string; lastSuccessAt: string | null }[];
   }>(cacheKey);
-  if (cached) return cached;
+
+  const computeUserAdvisories = async (cat: AqiCategorySlug | null, fresh: "fresh" | "aging" | "stale") => {
+    const [prof, fam] = await Promise.all([
+      db.query.profiles.findFirst({ where: eq(profiles.userId, userId) }),
+      db.query.familyMembers.findMany({ where: eq(familyMembers.userId, userId) }),
+    ]);
+    return evaluateAdvisories({
+      category: cat,
+      freshness: fresh,
+      lifestyle: prof?.lifestyle,
+      ageGroups: fam.map((m) => m.ageGroup),
+      activities: ((prof?.activities as { name: string }[]) ?? []).map((a) => a.name.toLowerCase()),
+    });
+  };
+
+  if (cached) {
+    const advisories = await computeUserAdvisories(
+      cached.aqi.category,
+      computeFreshness(cached.aqi.windowEnd)
+    );
+    return { ...cached, advisories };
+  }
 
   const [snapshot, latestReadings, wx, cpcbStatus] = await Promise.all([
     db.query.aqiSnapshots.findFirst({
@@ -540,7 +655,11 @@ export async function getAqiCurrent(userId: string, locationId?: string) {
   };
 
   await cacheSet(cacheKey, result, 120);
-  return result;
+  const advisories = await computeUserAdvisories(
+    result.aqi.category,
+    computeFreshness(result.aqi.windowEnd)
+  );
+  return { ...result, advisories };
 }
 
 export async function getAqiHistory(
@@ -572,6 +691,65 @@ export async function getAqiHistory(
       kind: "observation" as const,
     })),
   };
+}
+
+export async function getAqiForecast(
+  userId: string,
+  locationId: string | undefined,
+  hours = 48
+) {
+  const clampedHours = Math.max(1, Math.min(48, Math.round(hours)));
+  const loc = await resolveUserLocation(userId, locationId);
+  const pt = loc?.roundedPoint ?? { lat: 22.575, lng: 88.365 };
+  const cacheKey = `aqi:forecast:${pt.lat},${pt.lng}:${clampedHours}`;
+
+  const cached = await cacheGet<{
+    hours: number;
+    points: {
+      t: string;
+      value: number;
+      category: AqiCategorySlug;
+      provider: "Open-Meteo";
+      kind: "forecast";
+    }[];
+  }>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const { airQuality } = await fetchOpenMeteo(pt);
+    const aq = airQuality.raw as {
+      hourly?: { time?: string[]; pm2_5?: (number | null)[] };
+    };
+    const times = aq.hourly?.time ?? [];
+    const pm25s = aq.hourly?.pm2_5 ?? [];
+    const points: {
+      t: string;
+      value: number;
+      category: AqiCategorySlug;
+      provider: "Open-Meteo";
+      kind: "forecast";
+    }[] = [];
+
+    for (let i = 0; i < Math.min(times.length, clampedHours); i++) {
+      const val = pm25s[i];
+      if (val === null || val === undefined || !Number.isFinite(val)) continue;
+      const subAqi = computeSubIndex("pm25", Math.max(0, val));
+      const iso = times[i].endsWith("Z") ? times[i] : `${times[i]}Z`;
+      points.push({
+        t: new Date(iso).toISOString(),
+        value: subAqi,
+        category: categoryFromAqi(subAqi),
+        provider: "Open-Meteo",
+        kind: "forecast",
+      });
+    }
+
+    const result = { hours: clampedHours, points };
+    await cacheSet(cacheKey, result, 900);
+    return result;
+  } catch {
+    return { hours: clampedHours, points: [] };
+  }
 }
 
 export async function getWeather(hours = 12) {
@@ -608,6 +786,12 @@ async function buildUserAiContext(
   const fam = await db.query.familyMembers.findMany({
     where: eq(familyMembers.userId, userId),
   });
+  const savedScens = await db
+    .select()
+    .from(simulatorScenarios)
+    .where(eq(simulatorScenarios.userId, userId))
+    .orderBy(desc(simulatorScenarios.savedAt))
+    .limit(3);
   const loc = await resolveUserLocation(userId, locationId);
 
   return buildContext(
@@ -629,6 +813,16 @@ async function buildUserAiContext(
         activities: (me.profile?.activities as { name: string; preferredTime: string }[]) ?? [],
       },
       family: fam.map((m) => ({ ageGroup: m.ageGroup, lifestyle: m.lifestyle })),
+      advisories: current.advisories,
+      savedScenarios: savedScens.map((s) => {
+        const inp = s.inputs as { baselineMode?: string };
+        const res = s.result as { avoidedPerWeek?: number; avoidedPerYear?: number };
+        return {
+          baselineMode: inp?.baselineMode ?? "car",
+          avoidedPerWeek: Number(res?.avoidedPerWeek ?? 0),
+          avoidedPerYear: Number(res?.avoidedPerYear ?? 0),
+        };
+      }),
     },
     excludeContext
   );
@@ -834,6 +1028,12 @@ export async function getOrBuildTodayPlan(
   }
 
   const current = await getAqiCurrent(userId, locationId);
+  const fam = await db.query.familyMembers.findMany({
+    where: eq(familyMembers.userId, userId),
+  });
+  const hasVulnerableMember = fam.some(
+    (m) => m.ageGroup === "child" || m.ageGroup === "older_adult"
+  );
   const cat = current.aqi.category ?? "moderate";
   const strip = buildDefaultWindowStrip(current.aqi.aqi, cat);
 
@@ -844,7 +1044,8 @@ export async function getOrBuildTodayPlan(
       { id: "evening-exercise", title: "Evening exercise", preferredHour: 18, flexible: true, type: "exercise" },
     ],
     strip,
-    new Date().toISOString()
+    new Date().toISOString(),
+    { hasVulnerableMember }
   );
 
   const [savedPlan] = await db
@@ -933,7 +1134,7 @@ export async function togglePlannerActivity(userId: string, actId: string, compl
   const plan = await db.query.plans.findFirst({
     where: and(eq(plans.id, act.planId), eq(plans.userId, userId)),
   });
-  if (!plan) throw new AppError("FORBIDDEN", 403, "Forbidden");
+  if (!plan) throw new AppError("NOT_FOUND", 404, "Activity not found");
 
   const [updated] = await db
     .update(planActivities)
@@ -949,7 +1150,7 @@ export async function deletePlannerActivity(userId: string, actId: string) {
   const plan = await db.query.plans.findFirst({
     where: and(eq(plans.id, act.planId), eq(plans.userId, userId)),
   });
-  if (!plan) throw new AppError("FORBIDDEN", 403, "Forbidden");
+  if (!plan) throw new AppError("NOT_FOUND", 404, "Activity not found");
 
   await db.delete(planActivities).where(eq(planActivities.id, actId));
   return { deleted: true };
@@ -973,6 +1174,31 @@ export async function createFamilyMember(
     .values({ userId, ...input })
     .returning();
   return created;
+}
+
+export async function patchFamilyMember(
+  userId: string,
+  memberId: string,
+  patch: {
+    name?: string;
+    ageGroup?: "child" | "teen" | "adult" | "older_adult";
+    lifestyle?: "student" | "professional" | "homemaker" | "retired" | "other";
+    activities?: string[];
+  }
+) {
+  const [updated] = await db
+    .update(familyMembers)
+    .set({
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.ageGroup !== undefined ? { ageGroup: patch.ageGroup } : {}),
+      ...(patch.lifestyle !== undefined ? { lifestyle: patch.lifestyle } : {}),
+      ...(patch.activities !== undefined ? { activities: patch.activities } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(familyMembers.id, memberId), eq(familyMembers.userId, userId)))
+    .returning();
+  if (!updated) throw new AppError("NOT_FOUND", 404, "Member not found");
+  return updated;
 }
 
 export async function deleteFamilyMember(userId: string, memberId: string) {
@@ -1008,8 +1234,11 @@ export async function updateIndoorProfile(userId: string, input: IndoorProfile) 
 export async function getIndoorRecommendations(userId: string, locationId?: string) {
   const profile = await getIndoorProfile(userId);
   const current = await getAqiCurrent(userId, locationId);
+  const fam = await db.query.familyMembers.findMany({
+    where: eq(familyMembers.userId, userId),
+  });
   const cat = current.aqi.category ?? "moderate";
-  return evaluateIndoorRules(cat, profile, buildDefaultWindowStrip(current.aqi.aqi, cat));
+  return evaluateIndoorRules(cat, profile, buildDefaultWindowStrip(current.aqi.aqi, cat), fam);
 }
 
 // --- Simulator ---
@@ -1077,6 +1306,15 @@ export async function saveSimulatorScenario(
     })
     .returning();
   return created;
+}
+
+export async function deleteSimulatorScenario(userId: string, scenarioId: string) {
+  const del = await db
+    .delete(simulatorScenarios)
+    .where(and(eq(simulatorScenarios.id, scenarioId), eq(simulatorScenarios.userId, userId)))
+    .returning({ id: simulatorScenarios.id });
+  if (del.length === 0) throw new AppError("NOT_FOUND", 404, "Scenario not found");
+  return { deleted: true };
 }
 
 // --- Community ---
@@ -1161,6 +1399,36 @@ export async function deleteCommunityReport(userId: string, reportId: string) {
     .returning({ id: communityReports.id });
   if (del.length === 0) throw new AppError("NOT_FOUND", 404, "Report not found");
   return { deleted: true };
+}
+
+export async function flagCommunityReport(userId: string, reportId: string) {
+  const report = await db.query.communityReports.findFirst({
+    where: eq(communityReports.id, reportId),
+  });
+  if (!report) throw new AppError("NOT_FOUND", 404, "Report not found");
+
+  const existingFlag = await db.query.reportFlags.findFirst({
+    where: and(eq(reportFlags.reportId, reportId), eq(reportFlags.userId, userId)),
+  });
+  if (existingFlag) {
+    throw new AppError("VALIDATION_FAILED", 422, "You have already flagged this report");
+  }
+
+  await db.insert(reportFlags).values({ reportId, userId });
+  const nextCount = report.flagCount + 1;
+  const nextStatus = nextCount >= 3 ? "removed" : report.status;
+
+  const [updated] = await db
+    .update(communityReports)
+    .set({ flagCount: nextCount, status: nextStatus, updatedAt: new Date() })
+    .where(eq(communityReports.id, reportId))
+    .returning();
+
+  return {
+    id: updated.id,
+    flagCount: updated.flagCount,
+    status: updated.status,
+  };
 }
 
 export async function moderateReport(

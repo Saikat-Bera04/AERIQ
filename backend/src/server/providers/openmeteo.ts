@@ -1,5 +1,10 @@
 import { PROVIDER_ENDPOINTS } from "./constants";
 import type { ProviderFetchResult } from "./cpcb";
+import {
+  fetchProviderJson,
+  RawOpenMeteoAqPayloadSchema,
+  RawOpenMeteoWeatherPayloadSchema,
+} from "./http";
 
 export async function fetchLatest(params: {
   lat: number;
@@ -26,20 +31,14 @@ export async function fetchLatest(params: {
   wxUrl.searchParams.set("forecast_hours", "48");
   wxUrl.searchParams.set("timezone", "UTC");
 
-  const [aqRes, wxRes] = await Promise.all([
-    fetch(aqUrl.toString(), { signal: AbortSignal.timeout(12_000) }),
-    fetch(wxUrl.toString(), { signal: AbortSignal.timeout(12_000) }),
+  const [aqRaw, wxRaw] = await Promise.all([
+    fetchProviderJson("openmeteo", aqUrl.toString(), RawOpenMeteoAqPayloadSchema),
+    fetchProviderJson("openmeteo", wxUrl.toString(), RawOpenMeteoWeatherPayloadSchema),
   ]);
-
-  if (!aqRes.ok || !wxRes.ok) {
-    throw new Error(
-      `Open-Meteo provider error: AQ=${aqRes.status} WX=${wxRes.status}`
-    );
-  }
 
   const fetchedAt = new Date().toISOString();
   return {
-    airQuality: { raw: await aqRes.json(), fetchedAt },
-    weather: { raw: await wxRes.json(), fetchedAt },
+    airQuality: { raw: aqRaw, fetchedAt },
+    weather: { raw: wxRaw, fetchedAt },
   };
 }

@@ -81,3 +81,12 @@ export type NotificationPrefs = z.infer<typeof NotificationPrefsSchema>;
 export const DeleteAccountRequestSchema = z.object({
   confirm: z.literal("DELETE"),
 });
+
+export const ForgotPasswordRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+export const ResetPasswordRequestSchema = z.object({
+  token: z.string().min(16),
+  password: z.string().min(8).max(128),
+});

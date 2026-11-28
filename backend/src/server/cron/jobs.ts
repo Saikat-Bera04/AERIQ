@@ -3,6 +3,7 @@ import { db } from "@/db";
 import {
   aqiSnapshots,
   locations,
+  planActivities,
   plans,
   providerStatus,
   readings,
@@ -11,11 +12,30 @@ import {
   weatherReadings,
 } from "@/db/schema";
 import { computeCpcbAqi } from "@/server/engines/aqi";
+import { categoryFromAqi } from "@/server/engines/aqi-breakpoints";
+import { computePlanInputsHash, getIstHour, shouldMarkPlanStale, type HourlyWindow } from "@/server/engines/planner";
 import { fetchLatest as fetchCpcb } from "@/server/providers/cpcb";
 import { fetchLatest as fetchOpenAq } from "@/server/providers/openaq";
 import { fetchLatest as fetchOpenMeteo } from "@/server/providers/openmeteo";
 import { normaliseSamples, type RawProviderSample } from "@/server/providers/normalise";
+import { acquireLock, releaseLock } from "@/server/lib/redis";
 import type { Pollutant } from "@/contracts";
+
+async function withCronLock<T>(
+  jobName: string,
+  fn: () => Promise<T>
+): Promise<T | { skipped: "locked" }> {
+  const key = `cron:lock:${jobName}`;
+  const acquired = await acquireLock(key, 600);
+  if (!acquired) {
+    return { skipped: "locked" };
+  }
+  try {
+    return await fn();
+  } finally {
+    await releaseLock(key);
+  }
+}
 
 interface CpcbRecord {
   station?: string;
@@ -68,7 +88,7 @@ async function recordProviderFailure(
     });
 }
 
-export async function runStationsSync(cities = ["Kolkata", "Delhi", "Bengaluru", "Mumbai"]) {
+async function syncStationsImpl(cities = ["Kolkata", "Delhi", "Bengaluru", "Mumbai"]) {
   let synced = 0;
 
   for (const city of cities) {
@@ -117,14 +137,21 @@ export async function runStationsSync(cities = ["Kolkata", "Delhi", "Bengaluru",
   return { job: "stations-sync", status: "ok", synced };
 }
 
-export async function runIngestObservations() {
-  const activeStations = await db.query.stations.findMany({
-    where: eq(stations.active, true),
-  });
+export async function runStationsSync(
+  cities: string[] = ["Kolkata", "Delhi", "Bengaluru", "Mumbai"]
+) {
+  return withCronLock("stations-sync", () => syncStationsImpl(cities));
+}
 
-  if (activeStations.length === 0) {
-    await runStationsSync(["Kolkata", "Delhi"]);
-  }
+export async function runIngestObservations() {
+  return withCronLock("ingest-observations", async () => {
+    const activeStations = await db.query.stations.findMany({
+      where: eq(stations.active, true),
+    });
+
+    if (activeStations.length === 0) {
+      await syncStationsImpl(["Kolkata", "Delhi"]);
+    }
 
   const allStations = await db.query.stations.findMany({
     where: eq(stations.active, true),
@@ -260,9 +287,11 @@ export async function runIngestObservations() {
     status: "ok",
     touchedStations: touchedStationIds.size,
   };
+  });
 }
 
 export async function runIngestForecast() {
+  return withCronLock("ingest-forecast", async () => {
   const savedLocs = await db.query.locations.findMany();
   const distinctKeys = new Map<string, { lat: number; lng: number }>();
   for (const loc of savedLocs) {
@@ -308,32 +337,125 @@ export async function runIngestForecast() {
   }
 
   return { job: "ingest-forecast", status: "ok", updatedLocations };
+  });
 }
 
-export async function runRefreshPlans() {
-  const updated = await db
-    .update(plans)
-    .set({ status: "stale", updatedAt: new Date() })
-    .where(eq(plans.status, "current"))
-    .returning({ id: plans.id });
+export async function runRefreshPlans(now = new Date()) {
+  return withCronLock("refresh-plans", async () => {
+    const currentPlans = await db.query.plans.findMany({
+      where: eq(plans.status, "current"),
+    });
 
-  return { job: "refresh-plans", status: "ok", markedStale: updated.length };
+    const currentHourIst = getIstHour(now);
+    const fallbackSnapshot = await db.query.aqiSnapshots.findFirst({
+      orderBy: [desc(aqiSnapshots.computedAt)],
+    });
+
+    let markedStale = 0;
+    let keptCurrent = 0;
+
+    for (const plan of currentPlans) {
+      const acts = await db
+        .select()
+        .from(planActivities)
+        .where(eq(planActivities.planId, plan.id));
+
+      const userLoc = await db.query.locations.findFirst({
+        where: and(eq(locations.userId, plan.userId), eq(locations.isDefault, true)),
+      });
+
+      const stationId = userLoc?.nearestStationId ?? fallbackSnapshot?.stationId;
+      const snap = stationId
+        ? await db.query.aqiSnapshots.findFirst({
+            where: eq(aqiSnapshots.stationId, stationId),
+            orderBy: [desc(aqiSnapshots.computedAt)],
+          })
+        : fallbackSnapshot;
+
+      const baseCat = (snap?.category as import("@/contracts").AqiCategorySlug | null) ?? "moderate";
+      const hourlyCategories = new Map<number, import("@/contracts").AqiCategorySlug>();
+      const hourlyWindows: HourlyWindow[] = [];
+
+      // Incorporate any stored forecast PM2.5 readings for remaining hours today
+      const forecastRows = stationId
+        ? await db
+            .select()
+            .from(readings)
+            .where(
+              and(
+                eq(readings.stationId, stationId),
+                eq(readings.kind, "forecast"),
+                gte(readings.observedAt, now)
+              )
+            )
+        : [];
+      const forecastByHour = new Map<number, number>();
+      for (const r of forecastRows) {
+        if (r.pollutant === "pm25") {
+          forecastByHour.set(getIstHour(r.observedAt), Number(r.value));
+        }
+      }
+
+      for (let h = currentHourIst; h <= 23; h++) {
+        let cat = baseCat;
+        const pm25Forecast = forecastByHour.get(h);
+        if (pm25Forecast !== undefined) {
+          // Approximate category from PM2.5 breakpoint when forecast exists
+          const approxAqi = Math.min(500, Math.round((pm25Forecast / 60) * 100));
+          cat = categoryFromAqi(approxAqi);
+        }
+        hourlyCategories.set(h, cat);
+        hourlyWindows.push({
+          hour: h,
+          aqi: snap?.aqi ?? null,
+          category: cat,
+          provider: pm25Forecast !== undefined ? "openmeteo" : "cpcb",
+          kind: pm25Forecast !== undefined ? "forecast" : "observation",
+        });
+      }
+
+      // Recompute inputsHash for today's remaining windows
+      const nextHash = computePlanInputsHash(
+        acts.map((a, idx) => ({
+          id: a.id ?? String(idx),
+          title: a.title,
+          preferredHour: getIstHour(a.start),
+          flexible: false,
+        })),
+        hourlyWindows
+      );
+
+      if (shouldMarkPlanStale(acts, hourlyCategories, currentHourIst)) {
+        await db
+          .update(plans)
+          .set({ status: "stale", inputsHash: nextHash, updatedAt: now })
+          .where(eq(plans.id, plan.id));
+        markedStale++;
+      } else {
+        keptCurrent++;
+      }
+    }
+
+    return { job: "refresh-plans", status: "ok", markedStale, keptCurrent };
+  });
 }
 
 export async function runCleanup(now = new Date()) {
-  const cutoffReadings = new Date(now.getTime() - 400 * 86400 * 1000);
-  const cutoffForecasts = new Date(now.getTime() - 7 * 86400 * 1000);
+  return withCronLock("cleanup", async () => {
+    const cutoffReadings = new Date(now.getTime() - 400 * 86400 * 1000);
+    const cutoffForecasts = new Date(now.getTime() - 7 * 86400 * 1000);
 
-  await db.delete(readings).where(lt(readings.observedAt, cutoffReadings));
-  await db
-    .delete(readings)
-    .where(and(eq(readings.kind, "forecast"), lt(readings.observedAt, cutoffForecasts)));
-  await db.delete(sessions).where(lt(sessions.expires, now));
+    await db.delete(readings).where(lt(readings.observedAt, cutoffReadings));
+    await db
+      .delete(readings)
+      .where(and(eq(readings.kind, "forecast"), lt(readings.observedAt, cutoffForecasts)));
+    await db.delete(sessions).where(lt(sessions.expires, now));
 
-  return {
-    job: "cleanup",
-    status: "ok",
-    cutoffReadings: cutoffReadings.toISOString(),
-    cutoffForecasts: cutoffForecasts.toISOString(),
-  };
+    return {
+      job: "cleanup",
+      status: "ok",
+      cutoffReadings: cutoffReadings.toISOString(),
+      cutoffForecasts: cutoffForecasts.toISOString(),
+    };
+  });
 }

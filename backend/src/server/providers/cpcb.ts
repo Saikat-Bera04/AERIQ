@@ -1,4 +1,5 @@
 import { PROVIDER_ENDPOINTS } from "./constants";
+import { fetchProviderJson, RawCpcbPayloadSchema } from "./http";
 
 export interface ProviderFetchResult {
   raw: unknown;
@@ -22,12 +23,6 @@ export async function fetchLatest(params: {
     url.searchParams.set("filters[state]", params.state);
   }
 
-  const res = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (!res.ok) {
-    throw new Error(`CPCB provider error: HTTP ${res.status}`);
-  }
-  const raw = await res.json();
+  const raw = await fetchProviderJson("cpcb", url.toString(), RawCpcbPayloadSchema);
   return { raw, fetchedAt: new Date().toISOString() };
 }

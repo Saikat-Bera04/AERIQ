@@ -66,4 +66,6 @@ jobs:
         run: npm run build
 
       - name: Run Vitest suite
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
         run: npm test

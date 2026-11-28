@@ -1,0 +1,74 @@
+name: AERIQ Cron & Keep-Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+    - cron: "*/15 * * * *"
+    - cron: "5 * * * *"
+    - cron: "*/30 * * * *"
+    - cron: "30 20 * * *"
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Optional job to run manually"
+        required: false
+        type: choice
+        options:
+          - health-live
+          - ingest-observations
+          - ingest-forecast
+          - refresh-plans
+          - stations-sync
+          - cleanup
+
+jobs:
+  run-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invoke backend endpoint
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_JOB: ${{ github.event.inputs.job }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "::notice::BACKEND_URL secret is not set; skipping."
+            exit 0
+          fi
+
+          BASE="${BACKEND_URL%/}"
+
+          call_cron() {
+            local path="$1"
+            echo "Calling POST ${BASE}${path}"
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer ${CRON_SECRET}" \
+              "${BASE}${path}"
+            echo ""
+          }
+
+          call_live() {
+            echo "Calling GET ${BASE}/health/live"
+            curl -fsSL "${BASE}/health/live"
+            echo ""
+          }
+
+          if [ -n "$INPUT_JOB" ]; then
+            case "$INPUT_JOB" in
+              health-live) call_live ;;
+              *) call_cron "/api/cron/${INPUT_JOB}" ;;
+            esac
+            exit 0
+          fi
+
+          case "$SCHEDULE" in
+            "*/10 * * * *") call_live ;;
+            "*/15 * * * *") call_cron "/api/cron/ingest-observations" ;;
+            "5 * * * *") call_cron "/api/cron/ingest-forecast" ;;
+            "*/30 * * * *") call_cron "/api/cron/refresh-plans" ;;
+            "30 20 * * *") call_cron "/api/cron/stations-sync" ;;
+            "30 21 * * *") call_cron "/api/cron/cleanup" ;;
+            *) echo "Unknown schedule: $SCHEDULE"; exit 1 ;;
+          esac

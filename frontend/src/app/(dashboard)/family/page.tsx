@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { Pencil, Plus, Trash2, X } from "lucide-react";
 import { PageHero } from "@/components/layout/PageHero";
 import { Panel, SectionHeader } from "@/components/layout/Panel";
 import { Chip, SkeletonBlock, TiltCard } from "@/components/ui-aeriq";
@@ -27,6 +27,7 @@ export default function FamilyPage() {
   const [members, setMembers] = useState<ApiFamilyMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [ageGroup, setAgeGroup] = useState<ApiFamilyMember["ageGroup"]>("adult");
@@ -40,7 +41,25 @@ export default function FamilyPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleAdd = async (e: React.FormEvent) => {
+  const openAddDrawer = () => {
+    setEditingId(null);
+    setName("");
+    setAgeGroup("adult");
+    setLifestyle("professional");
+    setError(null);
+    setSheetOpen(true);
+  };
+
+  const openEditDrawer = (m: ApiFamilyMember) => {
+    setEditingId(m.id);
+    setName(m.name);
+    setAgeGroup(m.ageGroup);
+    setLifestyle(m.lifestyle);
+    setError(null);
+    setSheetOpen(true);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       setError("Enter a name");
@@ -48,14 +67,24 @@ export default function FamilyPage() {
     }
     setError(null);
     try {
-      const { data } = await api.post<ApiFamilyMember>("/api/v1/family", {
-        name: name.trim(),
-        ageGroup,
-        lifestyle,
-        activities: [],
-      });
-      setMembers((prev) => [...prev, data]);
+      if (editingId) {
+        const { data } = await api.patch<ApiFamilyMember>(`/api/v1/family/${editingId}`, {
+          name: name.trim(),
+          ageGroup,
+          lifestyle,
+        });
+        setMembers((prev) => prev.map((m) => (m.id === editingId ? data : m)));
+      } else {
+        const { data } = await api.post<ApiFamilyMember>("/api/v1/family", {
+          name: name.trim(),
+          ageGroup,
+          lifestyle,
+          activities: [],
+        });
+        setMembers((prev) => [...prev, data]);
+      }
       setName("");
+      setEditingId(null);
       setSheetOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save member");
@@ -118,6 +147,14 @@ export default function FamilyPage() {
                   </TiltCard>
                   <button
                     type="button"
+                    onClick={() => openEditDrawer(m)}
+                    aria-label={`Edit ${m.name}`}
+                    className="absolute bottom-4 right-14 z-20 p-2 rounded-full bg-black/50 text-white hover:bg-[var(--ink)] cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => void handleRemove(m.id)}
                     aria-label={`Remove ${m.name}`}
                     className="absolute bottom-4 right-4 z-20 p-2 rounded-full bg-black/50 text-white hover:bg-[var(--aqi-verypoor)] cursor-pointer"
@@ -130,7 +167,7 @@ export default function FamilyPage() {
 
             <button
               type="button"
-              onClick={() => setSheetOpen(true)}
+              onClick={openAddDrawer}
               className="h-[360px] rounded-[12px] border-2 border-dashed border-[var(--rule)] bg-[var(--paper)] hover:border-[var(--ink)] transition-colors flex flex-col items-center justify-center gap-3 p-6 cursor-pointer"
             >
               <span className="w-12 h-12 rounded-full bg-[var(--lime)] text-[var(--ink)] inline-flex items-center justify-center">
@@ -154,7 +191,7 @@ export default function FamilyPage() {
           >
             <div>
               <div className="flex items-center justify-between mb-6">
-                <Chip>New member</Chip>
+                <Chip>{editingId ? "Edit member" : "New member"}</Chip>
                 <button
                   type="button"
                   onClick={() => setSheetOpen(false)}
@@ -165,10 +202,10 @@ export default function FamilyPage() {
                 </button>
               </div>
               <h3 className="text-[28px] font-medium tracking-[-0.03em] mb-6">
-                Add to household
+                {editingId ? "Edit household member" : "Add to household"}
               </h3>
 
-              <form onSubmit={handleAdd} className="flex flex-col gap-4">
+              <form onSubmit={handleSave} className="flex flex-col gap-4">
                 <div className="flex flex-col gap-1">
                   <label className="mono text-[var(--ink2)]">Name</label>
                   <input

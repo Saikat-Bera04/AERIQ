@@ -187,29 +187,67 @@ export function buildDeterministicDailyFallback(
   const limits = [...ctx.limits];
   if (pausedMessage) limits.unshift(pausedMessage);
 
+  const firstScenario = ctx.savedScenarios?.[0];
+  const impactExplanation = firstScenario
+    ? `Your saved ${firstScenario.baselineMode} commute scenario avoids ${firstScenario.avoidedPerWeek} kg CO2e/week (${firstScenario.avoidedPerYear} kg CO2e/year).`
+    : "No saved commute simulator scenarios yet; run the simulator to calculate your CO2e savings.";
+
+  const advByAct = (act: string) =>
+    (ctx.advisories ?? []).filter((a) => a.activity === act).map((a) => a.text);
+
+  const commuteAdvisories = advByAct("commute");
+  const studyAdvisories = advByAct("study");
+  const exerciseAdvisories = advByAct("exercise");
+  const indoorAdvisories = advByAct("indoor");
+  const generalAdvisories = advByAct("general");
+
   return {
-    dailySummary: `Current air quality in ${ctx.location?.city ?? "your city"} is ${aqiStr}.`,
+    dailySummary:
+      generalAdvisories[0] ??
+      `Current air quality in ${ctx.location?.city ?? "your city"} is ${aqiStr}.`,
     airQualityStatus: `Status: ${aqiStr} from ${ctx.air?.provider ?? "CPCB"}.`,
     commute: {
-      summary: "Prefer covered transit and avoid prolonged roadside waiting during peak traffic.",
-      actions: ["Check station readings before leaving.", "Use metro or closed-window transit when air is Poor or worse."],
+      summary:
+        commuteAdvisories[0] ??
+        "Prefer covered transit and avoid prolonged roadside waiting during peak traffic.",
+      actions:
+        commuteAdvisories.length > 0
+          ? commuteAdvisories
+          : [
+              "Check station readings before leaving.",
+              "Use metro or closed-window transit when air is Poor or worse.",
+            ],
     },
     study: {
-      summary: "Keep study spaces indoors during peak particulate hours.",
-      actions: ["Ventilate briefly during afternoon moderate windows."],
+      summary:
+        studyAdvisories[0] ??
+        "Keep study spaces indoors during peak particulate hours.",
+      actions:
+        studyAdvisories.length > 0
+          ? studyAdvisories
+          : ["Ventilate briefly during afternoon moderate windows."],
     },
     exercise: {
-      summary: "Time outdoor workouts to cleaner hours or switch indoors when air is Poor.",
-      actions: ["Use the planner to shift runs to lower-AQI hours."],
+      summary:
+        exerciseAdvisories[0] ??
+        "Time outdoor workouts to cleaner hours or switch indoors when air is Poor.",
+      actions:
+        exerciseAdvisories.length > 0
+          ? exerciseAdvisories
+          : ["Use the planner to shift runs to lower-AQI hours."],
     },
-    indoor: {
-      summary: "Keep street-facing windows closed during Poor air and run exhaust while cooking.",
-      actions: ["Run kitchen exhaust during cooking.", "Damp-mop dust instead of dry sweeping."],
-    },
+    indoorAirRecommendations:
+      indoorAdvisories.length > 0
+        ? indoorAdvisories
+        : [
+            "Keep street-facing windows closed during Poor air and run kitchen exhaust while cooking.",
+            "Damp-mop dust instead of dry sweeping.",
+          ],
     sustainableActions: {
       summary: "Public transit, cycling, or walking cut tailpipe emissions.",
       actions: ["Compare commute modes in the simulator."],
     },
+    impactExplanation,
     dataLimitations:
       limits.length > 0
         ? limits
@@ -359,7 +397,7 @@ export async function generateDailyRecommendation(
     schema: DailyRecommendationSchema,
     ctx,
     userPrompt:
-      "Generate today's DailyRecommendation JSON explaining the validated readings and forecast windows.",
+      "Generate today's DailyRecommendation JSON with dailySummary, airQualityStatus, commute, study, exercise, indoorAirRecommendations, sustainableActions, impactExplanation (derived strictly from CONTEXT.savedScenarios if present, otherwise state none saved), and dataLimitations.",
     fallback: (msg) => buildDeterministicDailyFallback(ctx, msg),
     client,
   });

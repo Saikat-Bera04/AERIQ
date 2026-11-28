@@ -80,7 +80,7 @@ export const AqiForecastResponseSchema = z.object({
       t: z.string().datetime({ offset: true }),
       value: z.number().nonnegative(),
       category: AqiCategoryEnum,
-      provider: z.literal("openmeteo"),
+      provider: z.literal("Open-Meteo"),
       kind: z.literal("forecast"),
     })
   ),

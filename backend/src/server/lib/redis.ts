@@ -11,6 +11,42 @@ export const redis =
 // In-memory fallback for local dev / tests when Upstash env vars are not set
 const memoryBuckets = new Map<string, { count: number; resetAt: number }>();
 const memoryCache = new Map<string, { value: unknown; expiresAt: number }>();
+const memoryLocks = new Map<string, number>();
+
+export async function acquireLock(
+  key: string,
+  ttlSeconds = 600
+): Promise<boolean> {
+  if (redis) {
+    const res = await redis.set(key, "1", { nx: true, ex: ttlSeconds });
+    return res === "OK";
+  }
+  const now = Date.now();
+  const existing = memoryLocks.get(key);
+  if (existing && existing > now) {
+    return false;
+  }
+  memoryLocks.set(key, now + ttlSeconds * 1000);
+  return true;
+}
+
+export async function releaseLock(key: string): Promise<void> {
+  if (redis) {
+    await redis.del(key);
+    return;
+  }
+  memoryLocks.delete(key);
+}
+
+export async function pingRedis(): Promise<"ok" | "unconfigured" | "error"> {
+  if (!redis) return "unconfigured";
+  try {
+    const res = await redis.ping();
+    return res === "PONG" ? "ok" : "error";
+  } catch {
+    return "error";
+  }
+}
 
 export async function cacheGet<T>(key: string): Promise<T | null> {
   if (redis) {

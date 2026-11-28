@@ -51,6 +51,13 @@ export interface AiContext {
     setting: string;
     expectedCategory: string | null;
   }[];
+  savedScenarios?: {
+    baselineMode: string;
+    avoidedPerWeek: number;
+    avoidedPerYear: number;
+  }[];
+  advisoryCodes?: string[];
+  advisories?: { code: string; activity: string; text: string }[];
   limits: string[];
 }
 
@@ -64,6 +71,8 @@ export function buildContext(
     profile: NonNullable<AiContext["profile"]>;
     family: { ageGroup: string; lifestyle: string }[];
     plan?: NonNullable<AiContext["plan"]>;
+    savedScenarios?: NonNullable<AiContext["savedScenarios"]>;
+    advisories?: { code: string; activity: string; text: string }[];
   },
   excludeContext: string[] = []
 ): AiContext {
@@ -127,6 +136,13 @@ export function buildContext(
     }));
   }
   if (!excluded.has("plan") && raw.plan) ctx.plan = raw.plan;
+  if (!excluded.has("savedScenarios") && raw.savedScenarios) {
+    ctx.savedScenarios = raw.savedScenarios;
+  }
+  if (raw.advisories && raw.advisories.length > 0) {
+    ctx.advisories = raw.advisories;
+    ctx.advisoryCodes = raw.advisories.map((a) => a.code);
+  }
 
   return ctx;
 }

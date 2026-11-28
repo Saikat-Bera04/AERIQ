@@ -126,7 +126,7 @@ export default function LoginPage() {
       </form>
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-2 text-[13px] text-[var(--muted)]">
-        <Link href="/login" className="hover:text-[var(--ink)] underline underline-offset-4">
+        <Link href="/forgot-password" className="hover:text-[var(--ink)] underline underline-offset-4">
           Forgot password?
         </Link>
         <span>

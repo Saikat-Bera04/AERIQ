@@ -87,9 +87,11 @@ export function computePlanInputsHash(
 export function buildPlan(
   activities: PlannerInputActivity[],
   hourlyWindows: HourlyWindow[],
-  nowIso: string
+  nowIso: string,
+  options?: { hasVulnerableMember?: boolean }
 ) {
   const byHour = new Map(hourlyWindows.map((w) => [w.hour, w]));
+  const swapThresholdRank = options?.hasVulnerableMember ? 3 : 4;
 
   const built: BuiltPlanActivity[] = activities.map((act) => {
     const duration = act.durationHours ?? 1;
@@ -140,7 +142,7 @@ export function buildPlan(
     }
 
     const chosenWin = byHour.get(bestHour) ?? hourlyWindows[0];
-    const isPoorOrWorse = CATEGORY_RANK[bestWorstCat] >= 4;
+    const isPoorOrWorse = CATEGORY_RANK[bestWorstCat] >= swapThresholdRank;
     const alt = INDOOR_ALTERNATIVES[act.type ?? "other"];
 
     return {
@@ -152,7 +154,9 @@ export function buildPlan(
       expectedAqi: chosenWin?.aqi ?? null,
       expectedCategory: bestWorstCat,
       reason: isPoorOrWorse
-        ? `Best nearby window is ${bestWorstCat}; moved indoors.`
+        ? options?.hasVulnerableMember && CATEGORY_RANK[bestWorstCat] === 3
+          ? `Moved indoors: ${bestWorstCat} air and household includes child or older adult.`
+          : `Best nearby window is ${bestWorstCat}; moved indoors.`
         : bestHour !== act.preferredHour
           ? `Moved to ${bestHour}:00 IST for cleaner ${bestWorstCat} air.`
           : `Scheduled at preferred hour (${bestWorstCat} air).`,
@@ -166,4 +170,36 @@ export function buildPlan(
     activities: built,
     windowStrip: hourlyWindows,
   };
+}
+
+export interface PlanActivityOverlapCheck {
+  start: Date;
+  end: Date;
+  expectedCategory: string | null;
+}
+
+export function getIstHour(date: Date): number {
+  const istMs = date.getTime() + 5.5 * 3600 * 1000;
+  return new Date(istMs).getUTCHours();
+}
+
+export function shouldMarkPlanStale(
+  activities: PlanActivityOverlapCheck[],
+  hourlyCategories: Map<number, AqiCategorySlug>,
+  minHourIst = 0
+): boolean {
+  for (const act of activities) {
+    const startH = getIstHour(act.start);
+    const rawEndH = getIstHour(act.end);
+    const endH = rawEndH <= startH ? startH + 1 : rawEndH;
+
+    for (let h = startH; h < endH; h++) {
+      if (h < minHourIst) continue;
+      const latestCat = hourlyCategories.get(h);
+      if (latestCat && act.expectedCategory && latestCat !== act.expectedCategory) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

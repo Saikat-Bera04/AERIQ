@@ -11,7 +11,7 @@ import {
   WordReveal,
 } from "@/components/ui-aeriq";
 import { ASSETS } from "@/lib/assets";
-import { api } from "@/lib/api";
+import { api, getCsrfToken } from "@/lib/api";
 import { useLiveLocation } from "@/hooks/useLiveLocation";
 
 interface ChatMessage {
@@ -86,10 +86,14 @@ export default function AssistantPage() {
     setSending(true);
 
     try {
-      const res = await fetch(`${api.baseUrl}/api/v1/assistant/chat`, {
+      const csrf = getCsrfToken();
+      const res = await fetch(`/api/v1/assistant/chat`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrf ? { "x-csrf-token": csrf } : {}),
+        },
         body: JSON.stringify({
           conversationId: activeConv ?? undefined,
           locationId: liveLoc?.id,

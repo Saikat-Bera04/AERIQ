@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   ChatRequestSchema,
@@ -8,6 +9,7 @@ import {
   CreatePlannerActivityRequestSchema,
   DeleteAccountRequestSchema,
   ExposureRequestSchema,
+  ForgotPasswordRequestSchema,
   GeneratePlanRequestSchema,
   HotspotsQuerySchema,
   IndoorProfileSchema,
@@ -15,11 +17,13 @@ import {
   LoginRequestSchema,
   ModerationStatusRequestSchema,
   NotificationPrefsSchema,
+  PatchFamilyMemberRequestSchema,
   PatchLocationRequestSchema,
   PatchPlannerActivityRequestSchema,
   PatchProfileRequestSchema,
   RecommendRequestSchema,
   RegisterRequestSchema,
+  ResetPasswordRequestSchema,
   SaveScenarioRequestSchema,
   SyncLocationRequestSchema,
 } from "@/contracts";
@@ -38,8 +42,18 @@ import {
   logRoute,
   okEnvelope,
 } from "@/server/lib/envelope";
-import { signSessionToken, verifySessionToken } from "@/server/lib/privacy";
-import { checkRateLimit } from "@/server/lib/redis";
+import {
+  createSession,
+  deleteAllUserSessions,
+  deleteSessionByRawToken,
+  generateCsrfToken,
+  validateAndSlideSession,
+} from "@/server/lib/privacy";
+import { hashUserId } from "@/server/ai/gemini";
+import { captureException } from "@/server/lib/sentry";
+import { sql } from "drizzle-orm";
+import { db } from "@/db";
+import { pingRedis, checkRateLimit } from "@/server/lib/redis";
 import {
   addPlannerActivity,
   createCommunityReport,
@@ -51,8 +65,11 @@ import {
   deleteFamilyMember,
   deleteLocation,
   deletePlannerActivity,
+  deleteSimulatorScenario,
   exportUserData,
+  flagCommunityReport,
   getAqiCurrent,
+  getAqiForecast,
   getAqiHistory,
   getAssistantRecommendation,
   getCommunityHotspots,
@@ -71,8 +88,11 @@ import {
   listSimulatorScenarios,
   loginUser,
   moderateReport,
+  patchFamilyMember,
   patchLocation,
   registerUser,
+  requestPasswordReset,
+  resetPasswordWithToken,
   runAssistantChat,
   runCommuteSimulation,
   runExposureSimulation,
@@ -116,45 +136,91 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-function corsHeaders(req: IncomingMessage): Record<string, string> {
-  const origin = req.headers.origin ?? process.env.AUTH_URL ?? "http://localhost:3000";
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
-  };
+function getAllowedAppOrigin(): string {
+  const raw = process.env.APP_URL ?? process.env.AUTH_URL ?? "http://localhost:3000";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return "http://localhost:3000";
+  }
 }
 
 function sendJson(
-  req: IncomingMessage,
+  _req: IncomingMessage,
   res: ServerResponse,
   status: number,
   body: unknown,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string | string[]>
 ) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     ...SECURITY_HEADERS,
-    ...corsHeaders(req),
     ...extraHeaders,
   });
   res.end(JSON.stringify(body));
 }
 
-function getSessionUserId(req: IncomingMessage): string | null {
+function getCookieValue(req: IncomingMessage, name: string): string | null {
   const cookieHeader = req.headers.cookie ?? "";
-  const match = /aeriq_session=([^;]+)/.exec(cookieHeader);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`(?:^|;\\s*)${escaped}=([^;]+)`).exec(cookieHeader);
   if (!match) return null;
-  return verifySessionToken(decodeURIComponent(match[1]));
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+async function getSessionUserId(req: IncomingMessage): Promise<string | null> {
+  const raw = getCookieValue(req, "aeriq_session");
+  if (!raw) return null;
+  return validateAndSlideSession(raw);
+}
+
+function isSecureCookie(): boolean {
+  return process.env.NODE_ENV === "production";
 }
 
 function sessionCookieHeader(token: string, maxAge = 2592000): string {
-  const isHttps =
-    process.env.NODE_ENV === "production" ||
-    (process.env.AUTH_URL ?? "").startsWith("https://");
-  const sameSite = isHttps ? "SameSite=None; Secure" : "SameSite=Lax";
-  return `aeriq_session=${encodeURIComponent(token)}; HttpOnly; ${sameSite}; Path=/; Max-Age=${maxAge}`;
+  const secure = isSecureCookie() ? " Secure;" : "";
+  return `aeriq_session=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+}
+
+function csrfCookieHeader(token: string, maxAge = 2592000): string {
+  const secure = isSecureCookie() ? " Secure;" : "";
+  return `aeriq_csrf=${encodeURIComponent(token)};${secure} SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+}
+
+function assertCsrf(req: IncomingMessage, requireDoubleSubmit: boolean): void {
+  const originHeader = req.headers.origin;
+  if (originHeader) {
+    let reqOrigin: string;
+    try {
+      reqOrigin = new URL(originHeader).origin;
+    } catch {
+      throw new AppError("FORBIDDEN", 403, "Invalid request origin");
+    }
+    if (reqOrigin !== getAllowedAppOrigin()) {
+      throw new AppError("FORBIDDEN", 403, "Origin not allowed");
+    }
+  }
+
+  if (!requireDoubleSubmit) return;
+
+  const cookieToken = getCookieValue(req, "aeriq_csrf");
+  const headerRaw = req.headers["x-csrf-token"];
+  const headerToken = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw;
+
+  if (!cookieToken || !headerToken) {
+    throw new AppError("FORBIDDEN", 403, "Missing CSRF token");
+  }
+
+  const a = Buffer.from(cookieToken, "utf8");
+  const b = Buffer.from(headerToken, "utf8");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    throw new AppError("FORBIDDEN", 403, "Invalid CSRF token");
+  }
 }
 
 export async function handleRequest(
@@ -166,16 +232,44 @@ export async function handleRequest(
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname.replace(/\/{2,}/g, "/");
   const method = (req.method ?? "GET").toUpperCase();
+  let logUserIdHash: string | null = null;
+  let errorCode = "OK";
 
   if (method === "OPTIONS") {
-    res.writeHead(204, { ...SECURITY_HEADERS, ...corsHeaders(req) });
+    res.writeHead(204, { ...SECURITY_HEADERS });
     res.end();
     return;
   }
 
   try {
+    if (path === "/health/live" && method === "GET") {
+      sendJson(req, res, 200, okEnvelope({ service: "aeriq-backend", status: "live" }));
+      return;
+    }
+
     if ((path === "/" || path === "/health") && method === "GET") {
-      sendJson(req, res, 200, okEnvelope({ service: "aeriq-backend", status: "ok" }));
+      let dbStatus: "ok" | "error" = "ok";
+      let providers: unknown[] = [];
+      try {
+        await db.execute(sql`SELECT 1`);
+        providers = await db.query.providerStatus.findMany();
+      } catch {
+        dbStatus = "error";
+      }
+      const redisStatus = await pingRedis();
+      const healthy = dbStatus === "ok" && redisStatus !== "error";
+      sendJson(
+        req,
+        res,
+        healthy ? 200 : 503,
+        okEnvelope({
+          service: "aeriq-backend",
+          status: healthy ? "ok" : "degraded",
+          db: dbStatus,
+          redis: redisStatus,
+          providers,
+        })
+      );
       return;
     }
 
@@ -210,6 +304,7 @@ export async function handleRequest(
 
     // --- Public auth routes ---
     if (path === "/api/v1/auth/register" && method === "POST") {
+      assertCsrf(req, false);
       const ip = req.socket.remoteAddress ?? "unknown";
       const rl = await checkRateLimit(`rl:auth:${ip}`, 10, 900);
       if (!rl.allowed) {
@@ -219,14 +314,16 @@ export async function handleRequest(
       }
       const body = RegisterRequestSchema.parse(await readJsonBody(req));
       const created = await registerUser(body);
-      const token = signSessionToken(created.userId);
+      const token = await createSession(created.userId);
+      const csrf = generateCsrfToken();
       sendJson(req, res, 201, okEnvelope(created), {
-        "Set-Cookie": sessionCookieHeader(token),
+        "Set-Cookie": [sessionCookieHeader(token), csrfCookieHeader(csrf)],
       });
       return;
     }
 
     if (path === "/api/v1/auth/login" && method === "POST") {
+      assertCsrf(req, false);
       const ip = req.socket.remoteAddress ?? "unknown";
       const rl = await checkRateLimit(`rl:auth:${ip}`, 10, 900);
       if (!rl.allowed) {
@@ -236,24 +333,67 @@ export async function handleRequest(
       }
       const body = LoginRequestSchema.parse(await readJsonBody(req));
       const user = await loginUser(body.email, body.password);
-      const token = signSessionToken(user.userId);
+      const oldSession = getCookieValue(req, "aeriq_session");
+      if (oldSession) {
+        await deleteSessionByRawToken(oldSession);
+      }
+      const token = await createSession(user.userId);
+      const csrf = generateCsrfToken();
       sendJson(req, res, 200, okEnvelope({ user }), {
-        "Set-Cookie": sessionCookieHeader(token),
+        "Set-Cookie": [sessionCookieHeader(token), csrfCookieHeader(csrf)],
       });
       return;
     }
 
     if (path === "/api/v1/auth/logout" && method === "POST") {
+      const existingSession = getCookieValue(req, "aeriq_session");
+      assertCsrf(req, Boolean(existingSession));
+      if (existingSession) {
+        await deleteSessionByRawToken(existingSession);
+      }
       sendJson(req, res, 200, okEnvelope({ loggedOut: true }), {
-        "Set-Cookie": sessionCookieHeader("", 0),
+        "Set-Cookie": [sessionCookieHeader("", 0), csrfCookieHeader("", 0)],
       });
       return;
     }
 
+    if (path === "/api/v1/auth/forgot" && method === "POST") {
+      assertCsrf(req, false);
+      const ip = req.socket.remoteAddress ?? "unknown";
+      const rl = await checkRateLimit(`rl:forgot:${ip}`, 5, 900);
+      if (!rl.allowed) {
+        throw new AppError("RATE_LIMITED", 429, "Too many requests", {
+          retryAfterSec: rl.retryAfterSec,
+        });
+      }
+      const body = ForgotPasswordRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await requestPasswordReset(body.email)));
+      return;
+    }
+
+    if (path === "/api/v1/auth/reset" && method === "POST") {
+      assertCsrf(req, false);
+      const ip = req.socket.remoteAddress ?? "unknown";
+      const rl = await checkRateLimit(`rl:reset:${ip}`, 10, 900);
+      if (!rl.allowed) {
+        throw new AppError("RATE_LIMITED", 429, "Too many requests", {
+          retryAfterSec: rl.retryAfterSec,
+        });
+      }
+      const body = ResetPasswordRequestSchema.parse(await readJsonBody(req));
+      sendJson(req, res, 200, okEnvelope(await resetPasswordWithToken(body.token, body.password)));
+      return;
+    }
+
     // --- Protected routes (session required) ---
-    const userId = getSessionUserId(req);
+    const userId = await getSessionUserId(req);
     if (!userId) {
       throw new AppError("UNAUTHENTICATED", 401, "Sign in required");
+    }
+    logUserIdHash = hashUserId(userId);
+
+    if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
+      assertCsrf(req, true);
     }
 
     const genRl = await checkRateLimit(`rl:gen:${userId}`, 300, 300);
@@ -264,7 +404,11 @@ export async function handleRequest(
     }
 
     if (path === "/api/v1/me" && method === "GET") {
-      sendJson(req, res, 200, okEnvelope(await getMe(userId)));
+      const existingCsrf = getCookieValue(req, "aeriq_csrf");
+      const extraHeaders = existingCsrf
+        ? undefined
+        : { "Set-Cookie": csrfCookieHeader(generateCsrfToken()) };
+      sendJson(req, res, 200, okEnvelope(await getMe(userId)), extraHeaders);
       return;
     }
 
@@ -318,6 +462,13 @@ export async function handleRequest(
       return;
     }
 
+    if (path === "/api/v1/aqi/forecast" && method === "GET") {
+      const locId = url.searchParams.get("locationId") ?? undefined;
+      const hours = Number(url.searchParams.get("hours") ?? 48);
+      sendJson(req, res, 200, okEnvelope(await getAqiForecast(userId, locId, hours)));
+      return;
+    }
+
     if (path === "/api/v1/weather" && method === "GET") {
       const hours = Number(url.searchParams.get("hours") ?? 12);
       sendJson(req, res, 200, okEnvelope(await getWeather(hours)));
@@ -365,7 +516,6 @@ export async function handleRequest(
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         ...SECURITY_HEADERS,
-        ...corsHeaders(req),
       });
       const sendEvent = (event: string, data: unknown) => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -445,9 +595,16 @@ export async function handleRequest(
     }
 
     const famMatch = /^\/api\/v1\/family\/([^/]+)$/.exec(path);
-    if (famMatch && method === "DELETE") {
-      sendJson(req, res, 200, okEnvelope(await deleteFamilyMember(userId, famMatch[1])));
-      return;
+    if (famMatch) {
+      if (method === "PATCH") {
+        const body = PatchFamilyMemberRequestSchema.parse(await readJsonBody(req));
+        sendJson(req, res, 200, okEnvelope(await patchFamilyMember(userId, famMatch[1], body)));
+        return;
+      }
+      if (method === "DELETE") {
+        sendJson(req, res, 200, okEnvelope(await deleteFamilyMember(userId, famMatch[1])));
+        return;
+      }
     }
 
     if (path === "/api/v1/indoor/profile" && method === "GET") {
@@ -501,6 +658,12 @@ export async function handleRequest(
       return;
     }
 
+    const scenMatch = /^\/api\/v1\/simulator\/scenarios\/([^/]+)$/.exec(path);
+    if (scenMatch && method === "DELETE") {
+      sendJson(req, res, 200, okEnvelope(await deleteSimulatorScenario(userId, scenMatch[1])));
+      return;
+    }
+
     if (path === "/api/v1/community/hotspots" && method === "GET") {
       const q = HotspotsQuerySchema.parse({
         lat: url.searchParams.get("lat") ?? undefined,
@@ -529,6 +692,12 @@ export async function handleRequest(
       return;
     }
 
+    const flagMatch = /^\/api\/v1\/community\/reports\/([^/]+)\/flag$/.exec(path);
+    if (flagMatch && method === "POST") {
+      sendJson(req, res, 200, okEnvelope(await flagCommunityReport(userId, flagMatch[1])));
+      return;
+    }
+
     const modMatch = /^\/api\/v1\/admin\/reports\/([^/]+)\/status$/.exec(path);
     if (modMatch && method === "POST") {
       const body = ModerationStatusRequestSchema.parse(await readJsonBody(req));
@@ -554,8 +723,9 @@ export async function handleRequest(
 
     if (path === "/api/v1/account" && method === "DELETE") {
       DeleteAccountRequestSchema.parse(await readJsonBody(req));
+      await deleteAllUserSessions(userId);
       sendJson(req, res, 200, okEnvelope(await deleteAccount(userId)), {
-        "Set-Cookie": "aeriq_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+        "Set-Cookie": [sessionCookieHeader("", 0), csrfCookieHeader("", 0)],
       });
       return;
     }
@@ -580,22 +750,20 @@ export async function handleRequest(
       appErr = new AppError("VALIDATION_FAILED", 422, "Validation failed", { fields });
     } else {
       appErr = new AppError("INTERNAL", 500, "An internal error occurred");
+      void captureException(err, { requestId, route: `${method} ${path}` });
     }
 
-    logRoute({
-      requestId,
-      route: `${method} ${path}`,
-      code: appErr.code,
-      ms: Date.now() - start,
-    });
+    errorCode = appErr.code;
     sendJson(req, res, appErr.status, errorEnvelope(appErr));
     return;
   } finally {
     logRoute({
       requestId,
       route: `${method} ${path}`,
-      code: String(res.statusCode),
+      userIdHash: logUserIdHash,
       ms: Date.now() - start,
+      status: res.statusCode,
+      code: res.statusCode >= 400 ? errorCode : String(res.statusCode),
     });
   }
 }
