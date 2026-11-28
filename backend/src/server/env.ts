@@ -5,6 +5,7 @@ const EnvSchema = z.object({
   AUTH_SECRET: z.string().min(1, "AUTH_SECRET is required"),
   AUTH_URL: z.string().url("AUTH_URL must be a valid URL"),
   APP_URL: z.string().url("APP_URL must be a valid URL").optional(),
+  ALLOWED_PREVIEW_ORIGIN: z.string().optional(),
   AUTH_TRUST_HOST: z.string().optional(),
   SENTRY_DSN: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),

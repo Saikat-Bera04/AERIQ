@@ -192,18 +192,29 @@ function csrfCookieHeader(token: string, maxAge = 2592000): string {
   return `aeriq_csrf=${encodeURIComponent(token)};${secure} SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 
+function isAllowedOrigin(originHeader: string): boolean {
+  let reqOrigin: string;
+  try {
+    reqOrigin = new URL(originHeader).origin;
+  } catch {
+    return false;
+  }
+  if (reqOrigin === getAllowedAppOrigin()) return true;
+  const previewPattern = process.env.ALLOWED_PREVIEW_ORIGIN;
+  if (previewPattern) {
+    try {
+      return new RegExp(previewPattern).test(reqOrigin);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function assertCsrf(req: IncomingMessage, requireDoubleSubmit: boolean): void {
   const originHeader = req.headers.origin;
-  if (originHeader) {
-    let reqOrigin: string;
-    try {
-      reqOrigin = new URL(originHeader).origin;
-    } catch {
-      throw new AppError("FORBIDDEN", 403, "Invalid request origin");
-    }
-    if (reqOrigin !== getAllowedAppOrigin()) {
-      throw new AppError("FORBIDDEN", 403, "Origin not allowed");
-    }
+  if (originHeader && !isAllowedOrigin(originHeader)) {
+    throw new AppError("FORBIDDEN", 403, "Origin not allowed");
   }
 
   if (!requireDoubleSubmit) return;

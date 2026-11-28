@@ -210,6 +210,34 @@ describe.skipIf(!hasTestDb)("Phase 4 — API, ownership & data integration tests
       (await agentA.delete(`/api/v1/community/reports/${repB.body.data.id}`).set("x-csrf-token", decodeURIComponent(csrfA))).status
     ).toBe(404);
 
+    // PATCH /api/v1/family/:id ownership check
+    expect(
+      (await agentA.patch(`/api/v1/family/${famB.body.data.id}`).set("x-csrf-token", decodeURIComponent(csrfA)).send({ name: "X" })).status
+    ).toBe(404);
+    expect(
+      (await agentB.patch(`/api/v1/family/${famB.body.data.id}`).set("x-csrf-token", decodeURIComponent(csrfB)).send({ name: "Child B Updated" })).status
+    ).toBe(200);
+
+    // Verify expected indexes exist in pg_indexes
+    const { db } = await import("@/db");
+    const { sql } = await import("drizzle-orm");
+    const idxRows = await db.execute(
+      sql`SELECT indexname FROM pg_indexes WHERE schemaname = 'public'`
+    );
+    const idxNames = new Set(
+      (idxRows as unknown as { indexname: string }[]).map((r) => r.indexname)
+    );
+    for (const expectedIdx of [
+      "readings_station_observed_desc_idx",
+      "readings_unique_idx",
+      "stations_point_gist_idx",
+      "community_reports_point_gist_idx",
+      "plans_user_date_idx",
+      "messages_conv_created_idx",
+    ]) {
+      expect(idxNames.has(expectedIdx), `Missing index ${expectedIdx}`).toBe(true);
+    }
+
     // Silence unused imports for schemas referenced in typechecks
     expect(AqiCurrentResponseSchema).toBeDefined();
     expect(AqiHistoryResponseSchema).toBeDefined();

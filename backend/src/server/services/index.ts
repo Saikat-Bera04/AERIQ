@@ -1406,6 +1406,9 @@ export async function flagCommunityReport(userId: string, reportId: string) {
     where: eq(communityReports.id, reportId),
   });
   if (!report) throw new AppError("NOT_FOUND", 404, "Report not found");
+  if (report.userId === userId) {
+    throw new AppError("FORBIDDEN", 403, "You cannot flag your own report");
+  }
 
   const existingFlag = await db.query.reportFlags.findFirst({
     where: and(eq(reportFlags.reportId, reportId), eq(reportFlags.userId, userId)),
